@@ -5,7 +5,9 @@
       "Bash(test:*)",
       "Bash(python:*)",
       "WebFetch(domain:github.com)",
-      "Bash(pyinstaller:*)"
+      "Bash(pyinstaller:*)",
+      "Bash(git stash:*)",
+      "Bash(git lfs:*)"
     ]
   }
 }
