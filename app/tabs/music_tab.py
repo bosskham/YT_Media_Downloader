@@ -225,6 +225,17 @@ def _transcribe_with_whisper(filepath: str, model_size: str = "base") -> str | N
     # ── Primary: faster-whisper (no pyannote / no HF token required) ──────────
     try:
         from faster_whisper import WhisperModel
+        # Only use the model if it is already cached locally.
+        # Loading an uncached model triggers a silent ~145 MB download that makes
+        # the card appear stuck in "Lyrics…" for several minutes with no feedback.
+        import os as _os2
+        from pathlib import Path as _Path2
+        _hf_home = _Path2(_os2.environ.get("HF_HOME",
+                          _Path2.home() / ".cache" / "huggingface"))
+        _model_cache = _hf_home / "hub" / f"models--Systran--faster-whisper-{model_size}"
+        if not _model_cache.exists():
+            print(f"[whisper] model '{model_size}' not cached at {_model_cache} — skipping", file=sys.stderr, flush=True)
+            return None
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
         segs, info = model.transcribe(filepath, beam_size=5)
         lang = info.language or ""

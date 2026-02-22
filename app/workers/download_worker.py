@@ -159,8 +159,13 @@ class DownloadWorker(QThread):
                         self.status_changed.emit(self.download_id, "lyrics")
                         _id = self.download_id
                         def _do_lyrics(cb=lyrics_callback, path=fp, sid=_id, _w=self):
-                            cb(path)
-                            _w.status_changed.emit(sid, "done")
+                            try:
+                                cb(path)
+                            except Exception as exc:
+                                import sys as _sys
+                                print(f"[worker] lyrics thread error: {exc!r}", file=_sys.stderr, flush=True)
+                            finally:
+                                _w.status_changed.emit(sid, "done")
                         threading.Thread(target=_do_lyrics, daemon=True).start()
                     else:
                         print("[worker] ERROR: no filepath for lyrics callback", file=_sys.stderr, flush=True)
