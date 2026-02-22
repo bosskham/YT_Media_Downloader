@@ -1,0 +1,19 @@
+PySide6>=6.6.0
+yt-dlp>=2024.1.1
+mutagen>=1.47.0
+pyinstaller==6.14.2
+
+# Optional — lyrics transcription + romanization (local fallback)
+#
+# For NVIDIA GPU (recommended — ~10-20x faster):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install faster-whisper pykakasi pypinyin unidecode
+#
+# For CPU only:
+#   pip install faster-whisper pykakasi pypinyin unidecode
+#
+# faster-whisper uses ctranslate2; torch is auto-detected at runtime.
+faster-whisper>=1.0.0
+pykakasi>=2.2.1
+pypinyin>=0.49.0
+unidecode>=1.3.7

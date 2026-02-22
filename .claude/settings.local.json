@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(test:*)",
+      "Bash(python:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(pyinstaller:*)"
+    ]
+  }
+}
