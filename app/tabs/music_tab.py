@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Optional
+
+# Serializes concurrent WhisperModel construction.
+# ctranslate2 imports tqdm lazily inside the model constructor; if two threads
+# enter simultaneously the tqdm class can be partially initialised, leaving
+# ctranslate2's disabled_tqdm stub without _lock → AttributeError.
+_whisper_model_lock = threading.Lock()
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -177,19 +184,19 @@ def _romanize_text(text: str, lang: str) -> str:
             import pykakasi
             kks = pykakasi.kakasi()
             return " ".join(d["hepburn"] for d in kks.convert(text) if d["hepburn"]).strip() or text
-        except ImportError:
+        except Exception:
             pass
     if base_lang in ("zh", "zh-cn", "zh-tw", "yue"):
         try:
             from pypinyin import lazy_pinyin, Style
             return " ".join(lazy_pinyin(text, style=Style.TONE)).strip() or text
-        except ImportError:
+        except Exception:
             pass
     # Korean + Arabic + Thai + everything else → unidecode approximation
     try:
         from unidecode import unidecode
         return unidecode(text)
-    except ImportError:
+    except Exception:
         pass
     return text
 
@@ -236,7 +243,8 @@ def _transcribe_with_whisper(filepath: str, model_size: str = "base") -> str | N
         if not _model_cache.exists():
             print(f"[whisper] model '{model_size}' not cached at {_model_cache} — skipping", file=sys.stderr, flush=True)
             return None
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        with _whisper_model_lock:
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
         segs, info = model.transcribe(filepath, beam_size=5)
         lang = info.language or ""
         segments_raw = [{"start": s.start, "text": s.text} for s in segs]

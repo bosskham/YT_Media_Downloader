@@ -28,9 +28,19 @@ if not _icon_file.exists():
 _icon_str = str(_icon_file) if _icon_file.exists() else None
 
 # ── Static data files ─────────────────────────────────────────────────────────
+from PyInstaller.utils.hooks import collect_data_files
+
 _datas = []
 if _icon_file.exists():
     _datas.append((str(_icon_file), "."))
+
+# pykakasi dictionary files (kanji/kana conversion tables)
+try:
+    import pykakasi  # noqa: F401
+    _datas += collect_data_files("pykakasi")
+    print("[INFO] pykakasi data files collected.")
+except Exception:
+    pass
 
 # ── FFmpeg binaries ───────────────────────────────────────────────────────────
 _bins = []
@@ -65,6 +75,11 @@ _hidden = [
     "mutagen.mp3",
     "mutagen.ogg",
     "mutagen.oggvorbis",
+    # ── tqdm (used by ctranslate2/faster-whisper; disabled_tqdm needs _lock) ──
+    "tqdm",
+    "tqdm.auto",
+    "tqdm.std",
+    "tqdm.utils",
     # ── stdlib extras sometimes missed by the analyser ────────────────────────
     "urllib.request",
     "http.cookiejar",
