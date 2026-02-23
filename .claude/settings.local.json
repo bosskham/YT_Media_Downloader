@@ -7,7 +7,15 @@
       "WebFetch(domain:github.com)",
       "Bash(pyinstaller:*)",
       "Bash(git stash:*)",
-      "Bash(git lfs:*)"
+      "Bash(git lfs:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(du:*)",
+      "Bash(git tag:*)",
+      "Bash(gh release:*)",
+      "Bash(cmd //c \"where gh\")",
+      "Bash(cmd //c \"gh --version\")"
     ]
   }
 }
