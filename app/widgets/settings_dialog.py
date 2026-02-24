@@ -66,6 +66,23 @@ class SettingsDialog(QDialog):
         ck_row.addStretch()
         gen_l.addLayout(ck_row)
 
+        ck_note = QLabel("Note: Chrome must be closed first. Use a cookies file to avoid this.")
+        ck_note.setProperty("role", "muted")
+        gen_l.addWidget(ck_note)
+
+        # Cookies file (Netscape format — takes priority over browser cookies)
+        ckf_row = QHBoxLayout()
+        ckf_row.addWidget(QLabel("Cookies file (overrides browser above):"))
+        self._cookies_file = QLineEdit()
+        self._cookies_file.setPlaceholderText("Path to cookies.txt (Netscape format)…")
+        ckf_row.addWidget(self._cookies_file)
+        ckf_browse = QPushButton("Browse…")
+        ckf_browse.setProperty("role", "secondary")
+        ckf_browse.setFixedWidth(90)
+        ckf_browse.clicked.connect(self._browse_cookies)
+        ckf_row.addWidget(ckf_browse)
+        gen_l.addLayout(ckf_row)
+
         root.addWidget(gen)
 
         # ── Video ────────────────────────────────────────
@@ -160,6 +177,7 @@ class SettingsDialog(QDialog):
         self._cookies_browser.setCurrentIndex(
             _browser_map.get(self._s.get("cookies_from_browser", ""), 0)
         )
+        self._cookies_file.setText(self._s.get("cookies_file", ""))
 
     def _save(self) -> None:
         self._s.update({
@@ -177,10 +195,18 @@ class SettingsDialog(QDialog):
                 "" if self._cookies_browser.currentIndex() == 0
                 else self._cookies_browser.currentText().lower()
             ),
+            "cookies_file": self._cookies_file.text().strip(),
         })
         self.accept()
 
     # ── private ──────────────────────────────────────────
+    def _browse_cookies(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select cookies file", str(Path.home()), "Text files (*.txt);;All files (*)"
+        )
+        if path:
+            self._cookies_file.setText(path)
+
     def _browse_output(self) -> None:
         current = self._out_edit.text() or str(Path.home())
         path = QFileDialog.getExistingDirectory(

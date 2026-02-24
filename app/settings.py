@@ -58,6 +58,7 @@ _DEFAULTS: dict[str, Any] = {
     "playlist_subfolder": True,
     # Authentication
     "cookies_from_browser": "",   # "" = disabled; "chrome" | "firefox" | "edge" | …
+    "cookies_file": "",           # path to Netscape cookies.txt (takes priority over browser)
 }
 
 

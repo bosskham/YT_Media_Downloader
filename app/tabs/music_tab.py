@@ -121,8 +121,12 @@ def _youtube_lyrics(url: str) -> str | None:
 
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
     from ..settings import get_settings as _gs
-    _browser = _gs().get("cookies_from_browser", "")
-    if _browser:
+    _cfg = _gs()
+    _ck_file = _cfg.get("cookies_file", "")
+    _browser  = _cfg.get("cookies_from_browser", "")
+    if _ck_file:
+        opts["cookiefile"] = _ck_file
+    elif _browser:
         opts["cookiesfrombrowser"] = (_browser,)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -550,6 +554,9 @@ class SingleTrackWidget(QWidget):
             "noplaylist":      True,
             "quiet":           True,
             "no_warnings":     True,
+            # Use Node.js for YouTube JS challenge solving (signature + n-challenge).
+            # Let yt-dlp use its default client list — restricting clients limits available formats.
+            "js_runtimes":     {"node": {}},
         }
 
         if fetch_lyr and title:
@@ -807,6 +814,9 @@ class CollectionWidget(QWidget):
                 "noplaylist":      True,
                 "quiet":           True,
                 "no_warnings":     True,
+                # Use Node.js for YouTube JS challenge solving (signature + n-challenge).
+                # Let yt-dlp use its default client list — restricting clients limits available formats.
+                "js_runtimes":     {"node": {}},
             }
 
             if fetch_lyr and title:

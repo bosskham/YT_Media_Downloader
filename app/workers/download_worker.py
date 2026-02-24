@@ -134,10 +134,15 @@ class DownloadWorker(QThread):
         # Force UTF-8 output from yt-dlp (Windows defaults to cp1252 in compiled exe)
         opts.setdefault("encoding", "utf-8")
 
-        # Browser cookies — needed for age-restricted / sign-in required videos
+        # Cookies — needed for age-restricted / sign-in required videos.
+        # cookies_file (Netscape format) takes priority over browser extraction.
         from ..settings import get_settings as _gs
-        _browser = _gs().get("cookies_from_browser", "")
-        if _browser:
+        _cfg = _gs()
+        _ck_file = _cfg.get("cookies_file", "")
+        _browser  = _cfg.get("cookies_from_browser", "")
+        if _ck_file:
+            opts.setdefault("cookiefile", _ck_file)
+        elif _browser:
             opts.setdefault("cookiesfrombrowser", (_browser,))
 
         # Point yt-dlp at the bundled FFmpeg binaries when they exist.
