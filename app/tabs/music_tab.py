@@ -120,6 +120,10 @@ def _youtube_lyrics(url: str) -> str | None:
         return None
 
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    from ..settings import get_settings as _gs
+    _browser = _gs().get("cookies_from_browser", "")
+    if _browser:
+        opts["cookiesfrombrowser"] = (_browser,)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)

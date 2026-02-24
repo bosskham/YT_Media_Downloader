@@ -55,6 +55,17 @@ class SettingsDialog(QDialog):
         conc_row.addStretch()
         gen_l.addLayout(conc_row)
 
+        # Browser cookies (age-restricted / sign-in required videos)
+        ck_row = QHBoxLayout()
+        ck_row.addWidget(QLabel("Browser cookies (age-restricted videos):"))
+        self._cookies_browser = QComboBox()
+        self._cookies_browser.addItems([
+            "None (disabled)", "Chrome", "Chromium", "Firefox", "Edge", "Brave", "Opera", "Vivaldi",
+        ])
+        ck_row.addWidget(self._cookies_browser)
+        ck_row.addStretch()
+        gen_l.addLayout(ck_row)
+
         root.addWidget(gen)
 
         # ── Video ────────────────────────────────────────
@@ -144,6 +155,12 @@ class SettingsDialog(QDialog):
         idx = self._whisper_model.findText(self._s.get("whisper_model", "base"))
         self._whisper_model.setCurrentIndex(max(0, idx))
 
+        _browser_map = {"": 0, "chrome": 1, "chromium": 2, "firefox": 3,
+                        "edge": 4, "brave": 5, "opera": 6, "vivaldi": 7}
+        self._cookies_browser.setCurrentIndex(
+            _browser_map.get(self._s.get("cookies_from_browser", ""), 0)
+        )
+
     def _save(self) -> None:
         self._s.update({
             "output_dir":        self._out_edit.text().strip(),
@@ -156,6 +173,10 @@ class SettingsDialog(QDialog):
             "fetch_lyrics":      self._fetch_lyrics.isChecked(),
             "playlist_subfolder": self._playlist_sub.isChecked(),
             "whisper_model":     self._whisper_model.currentText(),
+            "cookies_from_browser": (
+                "" if self._cookies_browser.currentIndex() == 0
+                else self._cookies_browser.currentText().lower()
+            ),
         })
         self.accept()
 

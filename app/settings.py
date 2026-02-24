@@ -56,6 +56,8 @@ _DEFAULTS: dict[str, Any] = {
     "whisper_model": "base",   # tiny | base | small | medium | large
     # Playlist
     "playlist_subfolder": True,
+    # Authentication
+    "cookies_from_browser": "",   # "" = disabled; "chrome" | "firefox" | "edge" | …
 }
 
 

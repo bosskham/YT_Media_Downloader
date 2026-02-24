@@ -134,6 +134,12 @@ class DownloadWorker(QThread):
         # Force UTF-8 output from yt-dlp (Windows defaults to cp1252 in compiled exe)
         opts.setdefault("encoding", "utf-8")
 
+        # Browser cookies — needed for age-restricted / sign-in required videos
+        from ..settings import get_settings as _gs
+        _browser = _gs().get("cookies_from_browser", "")
+        if _browser:
+            opts.setdefault("cookiesfrombrowser", (_browser,))
+
         # Point yt-dlp at the bundled FFmpeg binaries when they exist.
         # resource_path("bin") works both in dev and in the PyInstaller bundle.
         ffmpeg_dir = resource_path("bin")
