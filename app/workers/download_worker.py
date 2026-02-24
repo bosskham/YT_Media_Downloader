@@ -134,6 +134,9 @@ class DownloadWorker(QThread):
         # Force UTF-8 output from yt-dlp (Windows defaults to cp1252 in compiled exe)
         opts.setdefault("encoding", "utf-8")
 
+        # Use Node.js for YouTube JS challenge solving (signature + n-challenge).
+        opts.setdefault("js_runtimes", {"node": {}})
+
         # Cookies — needed for age-restricted / sign-in required videos.
         # cookies_file (Netscape format) takes priority over browser extraction.
         from ..settings import get_settings as _gs

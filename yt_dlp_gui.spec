@@ -7,7 +7,13 @@
 #
 # Prerequisites:
 #   pip install pyinstaller==6.14.2
+#   pip install "yt-dlp[default]"   ← installs yt-dlp-ejs (JS challenge solver scripts)
 #   Place ffmpeg.exe and ffprobe.exe into bin/ before building.
+#
+# Runtime requirement (NOT bundled — must be installed on the target machine):
+#   Node.js LTS  https://nodejs.org  (needed for YouTube JS challenge / age-restricted videos)
+#   Node.js is ~50 MB standalone and is a system-level dependency; bundle it separately
+#   if you need a fully self-contained distribution.
 #
 # Optional packages (include them in your venv before building to bundle them):
 #   pip install faster-whisper pykakasi pypinyin unidecode
@@ -42,6 +48,17 @@ try:
 except Exception:
     pass
 
+# yt-dlp-ejs JavaScript challenge solver scripts
+# These JS files are loaded at runtime by yt-dlp to solve YouTube's n-challenge
+# and signature challenge (used for age-restricted / protected videos).
+try:
+    import yt_dlp_ejs  # noqa: F401
+    _datas += collect_data_files("yt_dlp_ejs")
+    print("[INFO] yt-dlp-ejs data files collected.")
+except Exception:
+    print("[WARN] yt-dlp-ejs not installed — JS challenge solving will not be bundled.")
+    print("       Run: pip install \"yt-dlp[default]\"")
+
 # ── FFmpeg binaries ───────────────────────────────────────────────────────────
 _bins = []
 for _name in ("ffmpeg.exe", "ffprobe.exe"):
@@ -65,6 +82,14 @@ _hidden = [
     "yt_dlp.postprocessor.modify_chapters",
     "yt_dlp.extractor",
     "yt_dlp.extractor.youtube",
+    # ── yt-dlp-ejs (JS challenge solver — installed via yt-dlp[default]) ──────
+    "yt_dlp_ejs",
+    # ── yt-dlp[default] dependencies ──────────────────────────────────────────
+    "websockets",           # async websocket support
+    "brotli",               # brotli content-encoding decompression
+    "Cryptodome",           # pycryptodomex: AES decryption for some extractors
+    "Cryptodome.Cipher",
+    "Cryptodome.Cipher.AES",
     # ── PySide6 network (thumbnail loading) ───────────────────────────────────
     "PySide6.QtNetwork",
     # ── mutagen ───────────────────────────────────────────────────────────────
@@ -180,7 +205,7 @@ exe = EXE(
         "ffmpeg.exe",    # UPX can corrupt FFmpeg — always exclude
         "ffprobe.exe",
     ],
-    console=False,       # GUI-only: no console window
+    console=False,        # set False for release (no console window)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
