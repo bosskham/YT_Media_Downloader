@@ -40,7 +40,7 @@ class HeaderWidget(QFrame):
         icon_lbl.setProperty("role", "header-icon")
         lay.addWidget(icon_lbl)
 
-        title = QLabel("YT-DLP GUI")
+        title = QLabel("YT Media Downloader")
         title.setProperty("role", "heading")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         lay.addWidget(title)
@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
         self._manager  = DownloadManager(
             max_concurrent=settings.get("max_concurrent", 2)
         )
-        self.setWindowTitle("YT-DLP GUI")
+        self.setWindowTitle("YT Media Downloader")
         self.setMinimumSize(820, 640)
         self.resize(1280, 800)
         # Window icon (title bar + taskbar) — works in dev and PyInstaller bundle
