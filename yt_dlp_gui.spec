@@ -84,6 +84,9 @@ _hidden = [
     "yt_dlp.extractor.youtube",
     # ── yt-dlp-ejs (JS challenge solver — installed via yt-dlp[default]) ──────
     "yt_dlp_ejs",
+    # ── Pillow (thumbnail crop-to-square) ─────────────────────────────────────
+    "PIL",
+    "PIL.Image",
     # ── yt-dlp[default] dependencies ──────────────────────────────────────────
     "websockets",           # async websocket support
     "brotli",               # brotli content-encoding decompression

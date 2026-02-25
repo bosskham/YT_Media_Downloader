@@ -10,6 +10,31 @@ from PySide6.QtCore import QThread, Signal
 from ..settings import resource_path
 
 
+def _crop_thumbnail_square(thumb_path: str) -> None:
+    """Center-crop a thumbnail image file to square in-place using Pillow."""
+    import sys
+    try:
+        from PIL import Image
+        img = Image.open(thumb_path)
+        w, h = img.size
+        if w == h:
+            return  # already square
+        size = min(w, h)
+        left = (w - size) // 2
+        top  = (h - size) // 2
+        img  = img.crop((left, top, left + size, top + size))
+        # Preserve format; fall back to JPEG
+        fmt = img.format or "JPEG"
+        img.save(thumb_path, format=fmt)
+        print(f"[thumbnail] cropped {w}x{h} → {size}x{size}  ({thumb_path!r})",
+              file=sys.stderr, flush=True)
+    except ImportError:
+        pass  # Pillow not installed — skip crop
+    except Exception as exc:
+        import sys as _sys
+        print(f"[thumbnail] crop error: {exc!r}", file=_sys.stderr, flush=True)
+
+
 def _fmt_speed(bps: float | None) -> str:
     if not bps:
         return "–"
@@ -121,6 +146,16 @@ class DownloadWorker(QThread):
                         final_filepath[0] = fp
                     else:
                         final_filepath.append(fp)
+
+                # After audio extraction, crop the thumbnail to square BEFORE
+                # EmbedThumbnail runs so the embedded art is always square.
+                if d.get("postprocessor") == "FFmpegExtractAudio":
+                    thumb = (info.get("__thumbnail_filename")
+                             or next((t.get("filepath", "") for t in
+                                      reversed(info.get("thumbnails", []))
+                                      if t.get("filepath")), ""))
+                    if thumb and os.path.isfile(thumb):
+                        _crop_thumbnail_square(thumb)
 
         opts = {
             **self.ydl_opts,
