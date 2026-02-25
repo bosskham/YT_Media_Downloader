@@ -132,6 +132,9 @@ try:
         "tokenizers",
         "huggingface_hub",
         "huggingface_hub.file_download",
+        "huggingface_hub._snapshot_download",   # used by _WhisperDownloadThread
+        "huggingface_hub.utils",
+        "filelock",                              # huggingface_hub cache locking
     ]
     print("[INFO] faster-whisper found — will be bundled.")
 except ImportError:
