@@ -119,9 +119,12 @@ def _youtube_lyrics(url: str) -> str | None:
     except ImportError:
         return None
 
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
-    # js_runtimes not needed here — subtitle extraction doesn't require JS
-    # challenge decryption (only stream URL decryption does).
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "js_runtimes": {"node": {}},
+    }
     from ..settings import get_settings as _gs
     _cfg = _gs()
     _ck_file = _cfg.get("cookies_file", "")
