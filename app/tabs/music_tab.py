@@ -12,9 +12,9 @@ from typing import Optional
 # ctranslate2's disabled_tqdm stub without _lock → AttributeError.
 _whisper_model_lock = threading.Lock()
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -318,7 +318,7 @@ def _fetch_and_embed_lyrics(filepath: str, url: str, title: str, artist: str, wh
     lrc: str | None = _youtube_lyrics(url) if url else None
 
     # Tier 1: faster-whisper / whisperX local transcription
-    if not lrc:
+    if not lrc and whisper_model:
         lrc = _transcribe_with_whisper(filepath, whisper_model)
 
     if lrc:
@@ -358,6 +358,144 @@ def _embed_lyrics(filepath: str, lyrics: str, title: str, artist: str) -> None:
             print(f"[lyrics] unsupported ext {ext!r} — skipping embed", file=sys.stderr, flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[lyrics] embed error: {exc!r}", file=sys.stderr, flush=True)
+
+
+# ── Whisper model check / download dialog ────────────────────────────────────
+
+def _is_whisper_model_cached(model_size: str) -> bool:
+    """Returns True if the faster-whisper model files are already cached locally."""
+    import os as _os
+    from pathlib import Path as _Path
+    _hf = _Path(_os.environ.get("HF_HOME", _Path.home() / ".cache" / "huggingface"))
+    return (_hf / "hub" / f"models--Systran--faster-whisper-{model_size}").exists()
+
+
+class _WhisperDownloadThread(QThread):
+    """Downloads a faster-whisper model in the background."""
+    done = Signal(bool, str)   # (success, error_message)
+
+    def __init__(self, model_size: str, parent=None) -> None:
+        super().__init__(parent)
+        self._model_size = model_size
+
+    def run(self) -> None:
+        try:
+            from faster_whisper import WhisperModel
+            WhisperModel(self._model_size, device="cpu", compute_type="int8")
+            self.done.emit(True, "")
+        except Exception as exc:
+            self.done.emit(False, str(exc))
+
+
+class _WhisperModelDialog(QDialog):
+    """
+    Shown when the faster-whisper model is not cached locally.
+    Buttons: Download / Skip (YouTube subtitles only) / Cancel
+    Call result_choice() after exec() → "download" | "skip" | "cancel"
+    """
+
+    def __init__(self, model_size: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Whisper Model Not Found")
+        self.setMinimumWidth(440)
+        self._model_size = model_size
+        self._choice = "cancel"
+        self._thread: _WhisperDownloadThread | None = None
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+
+        self._label = QLabel(
+            f"The <b>faster-whisper '{model_size}'</b> model is not downloaded.\n\n"
+            "It is used as a fallback when YouTube subtitles are unavailable.\n"
+            "Without it, only YouTube subtitle tracks will be used for lyrics."
+        )
+        self._label.setWordWrap(True)
+        lay.addWidget(self._label)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        lay.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        self._btn_dl     = QPushButton("Download model")
+        self._btn_skip   = QPushButton("Skip (YouTube only)")
+        self._btn_cancel = QPushButton("Cancel")
+        btn_row.addWidget(self._btn_dl)
+        btn_row.addWidget(self._btn_skip)
+        btn_row.addWidget(self._btn_cancel)
+        lay.addLayout(btn_row)
+
+        self._btn_dl.clicked.connect(self._start_download)
+        self._btn_skip.clicked.connect(self._skip)
+        self._btn_cancel.clicked.connect(self._cancel)
+
+    # ── slots ──────────────────────────────────────────────────────────────────
+
+    def _start_download(self) -> None:
+        self._btn_dl.setEnabled(False)
+        self._btn_skip.setEnabled(False)
+        self._btn_cancel.setEnabled(False)
+        self._status.setText("Downloading model… this may take a few minutes.")
+        self._thread = _WhisperDownloadThread(self._model_size, self)
+        self._thread.done.connect(self._on_done)
+        self._thread.start()
+
+    def _on_done(self, success: bool, error: str) -> None:
+        if success:
+            self._choice = "download"
+            self.accept()
+        else:
+            self._status.setText(f"Download failed: {error}")
+            self._btn_dl.setEnabled(True)
+            self._btn_skip.setEnabled(True)
+            self._btn_cancel.setEnabled(True)
+
+    def _skip(self) -> None:
+        self._choice = "skip"
+        self.accept()
+
+    def _cancel(self) -> None:
+        if self._thread and self._thread.isRunning():
+            self._thread.terminate()
+        self._choice = "cancel"
+        self.reject()
+
+    def closeEvent(self, event) -> None:
+        if self._thread and self._thread.isRunning():
+            self._thread.terminate()
+        self._choice = "cancel"
+        super().closeEvent(event)
+
+    def result_choice(self) -> str:
+        return self._choice
+
+
+def _check_whisper_model(parent: QWidget, model_size: str) -> str | None:
+    """
+    Ensure the whisper model is ready.  Must be called from the main thread.
+
+    Returns:
+        model_size  — model is cached (or was just downloaded); use normally
+        ""          — user chose Skip; proceed with YouTube lyrics only
+        None        — user cancelled; abort the download entirely
+    """
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError:
+        return ""   # faster-whisper not installed — skip silently
+
+    if not model_size or _is_whisper_model_cached(model_size):
+        return model_size   # already ready
+
+    dlg = _WhisperModelDialog(model_size, parent)
+    dlg.exec()
+    choice = dlg.result_choice()
+    if choice == "cancel":
+        return None
+    if choice == "skip":
+        return ""
+    return model_size   # "download" — model now cached
 
 
 # ── options row shared widget ─────────────────────────────────────────────────
@@ -567,6 +705,9 @@ class SingleTrackWidget(QWidget):
         if fetch_lyr and title:
             _t, _a, _u = title, artist, url
             _m = self._settings.get("whisper_model", "base")
+            _m = _check_whisper_model(self, _m)
+            if _m is None:   # user cancelled
+                return
             ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
             ydl_opts["_target_codec"]    = codec
 
@@ -794,6 +935,13 @@ class CollectionWidget(QWidget):
         use_sub     = self._subfolder_chk.isChecked()
         os.makedirs(out_dir, exist_ok=True)
 
+        # Check whisper model once before queuing any tracks.
+        _whisper_m = self._settings.get("whisper_model", "base")
+        if fetch_lyr:
+            _whisper_m = _check_whisper_model(self, _whisper_m)
+            if _whisper_m is None:   # user cancelled
+                return
+
         for idx in selected_idx:
             num   = idx + 1
             entry = self._entries[idx]
@@ -826,7 +974,7 @@ class CollectionWidget(QWidget):
 
             if fetch_lyr and title:
                 _t, _a, _u = title, artist, video_url
-                _m = self._settings.get("whisper_model", "base")
+                _m = _whisper_m
                 ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
                 ydl_opts["_target_codec"]    = codec
 
