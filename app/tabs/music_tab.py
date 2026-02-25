@@ -6,11 +6,15 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-# Serializes concurrent WhisperModel construction.
-# ctranslate2 imports tqdm lazily inside the model constructor; if two threads
-# enter simultaneously the tqdm class can be partially initialised, leaving
-# ctranslate2's disabled_tqdm stub without _lock → AttributeError.
-_whisper_model_lock = threading.Lock()
+# Serializes ALL faster-whisper operations (construction + transcribe).
+# ctranslate2 / CUDA is not safe to run on multiple threads simultaneously:
+# two concurrent .transcribe() calls on the same GPU will crash the process.
+# The lock also prevents the tqdm partial-init race on PyInstaller builds.
+_whisper_model_lock: threading.Lock = threading.Lock()
+
+# Cached WhisperModel instances keyed by (model_size, device, compute_type).
+# Avoids reloading model weights (~seconds) on every song.
+_whisper_model_cache: dict = {}
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -257,10 +261,19 @@ def _transcribe_with_whisper(filepath: str, model_size: str = "base") -> str | N
             print(f"[whisper] model '{model_size}' not cached at {_model_cache} — skipping", file=sys.stderr, flush=True)
             return None
         with _whisper_model_lock:
-            model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        segs, info = model.transcribe(filepath, beam_size=5)
-        lang = info.language or ""
-        segments_raw = [{"start": s.start, "text": s.text} for s in segs]
+            # Load model once; reuse cached instance for subsequent songs.
+            _key = (model_size, device, compute_type)
+            if _key not in _whisper_model_cache:
+                _whisper_model_cache[_key] = WhisperModel(
+                    model_size, device=device, compute_type=compute_type
+                )
+            model = _whisper_model_cache[_key]
+            # Hold the lock for the full transcription: ctranslate2/CUDA is not
+            # thread-safe — two concurrent .transcribe() calls crash the process.
+            segs, info = model.transcribe(filepath, beam_size=5)
+            lang = info.language or ""
+            # Consume the lazy generator inside the lock.
+            segments_raw = [{"start": s.start, "text": s.text} for s in segs]
         print(f"[whisper] faster-whisper  language={lang!r}  segments={len(segments_raw)}", file=sys.stderr, flush=True)
     except ImportError:
         # ── Fallback: whisperX (needs pyannote + HF token on first run) ───────
