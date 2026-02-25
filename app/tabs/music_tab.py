@@ -362,6 +362,9 @@ def _embed_lyrics(filepath: str, lyrics: str, title: str, artist: str) -> None:
 
 # ── Whisper model check / download dialog ────────────────────────────────────
 
+_NO_LYRICS = object()   # sentinel: user chose Ignore — proceed with download but no lyrics
+
+
 def _is_whisper_model_cached(model_size: str) -> bool:
     """Returns True if the faster-whisper model files are already cached locally."""
     import os as _os
@@ -390,8 +393,8 @@ class _WhisperDownloadThread(QThread):
 class _WhisperModelDialog(QDialog):
     """
     Shown when the faster-whisper model is not cached locally.
-    Buttons: Download / Skip (YouTube subtitles only) / Cancel
-    Call result_choice() after exec() → "download" | "skip" | "cancel"
+    Buttons: Download / Ignore / Cancel
+    Call result_choice() after exec() → "download" | "ignore" | "cancel"
     """
 
     def __init__(self, model_size: str, parent=None) -> None:
@@ -407,8 +410,10 @@ class _WhisperModelDialog(QDialog):
 
         self._label = QLabel(
             f"The <b>faster-whisper '{model_size}'</b> model is not downloaded.\n\n"
-            "It is used as a fallback when YouTube subtitles are unavailable.\n"
-            "Without it, only YouTube subtitle tracks will be used for lyrics."
+            "It is used to transcribe lyrics when YouTube subtitles are unavailable.\n\n"
+            "<b>Download</b> — download the model now, then fetch lyrics as usual.\n"
+            "<b>Ignore</b> — proceed with the download but skip lyrics entirely.\n"
+            "<b>Cancel</b> — do not start the download."
         )
         self._label.setWordWrap(True)
         lay.addWidget(self._label)
@@ -419,15 +424,15 @@ class _WhisperModelDialog(QDialog):
 
         btn_row = QHBoxLayout()
         self._btn_dl     = QPushButton("Download model")
-        self._btn_skip   = QPushButton("Skip (YouTube only)")
+        self._btn_ignore = QPushButton("Ignore")
         self._btn_cancel = QPushButton("Cancel")
         btn_row.addWidget(self._btn_dl)
-        btn_row.addWidget(self._btn_skip)
+        btn_row.addWidget(self._btn_ignore)
         btn_row.addWidget(self._btn_cancel)
         lay.addLayout(btn_row)
 
         self._btn_dl.clicked.connect(self._start_download)
-        self._btn_skip.clicked.connect(self._skip)
+        self._btn_ignore.clicked.connect(self._ignore)
         self._btn_cancel.clicked.connect(self._cancel)
 
     # ── slots ──────────────────────────────────────────────────────────────────
@@ -448,11 +453,11 @@ class _WhisperModelDialog(QDialog):
         else:
             self._status.setText(f"Download failed: {error}")
             self._btn_dl.setEnabled(True)
-            self._btn_skip.setEnabled(True)
+            self._btn_ignore.setEnabled(True)
             self._btn_cancel.setEnabled(True)
 
-    def _skip(self) -> None:
-        self._choice = "skip"
+    def _ignore(self) -> None:
+        self._choice = "ignore"
         self.accept()
 
     def _cancel(self) -> None:
@@ -471,30 +476,30 @@ class _WhisperModelDialog(QDialog):
         return self._choice
 
 
-def _check_whisper_model(parent: QWidget, model_size: str) -> str | None:
+def _check_whisper_model(parent: QWidget, model_size: str):
     """
     Ensure the whisper model is ready.  Must be called from the main thread.
 
     Returns:
-        model_size  — model is cached (or was just downloaded); use normally
-        ""          — user chose Skip; proceed with YouTube lyrics only
-        None        — user cancelled; abort the download entirely
+        model_size (str) — model cached or just downloaded; use full lyrics pipeline
+        _NO_LYRICS       — user chose Ignore; proceed with download, no lyrics at all
+        None             — user cancelled; abort the download entirely
     """
     try:
         import faster_whisper  # noqa: F401
     except ImportError:
-        return ""   # faster-whisper not installed — skip silently
+        return model_size   # faster-whisper not installed; skip dialog, pipeline handles it
 
     if not model_size or _is_whisper_model_cached(model_size):
-        return model_size   # already ready
+        return model_size   # already ready; no dialog needed
 
     dlg = _WhisperModelDialog(model_size, parent)
     dlg.exec()
     choice = dlg.result_choice()
     if choice == "cancel":
         return None
-    if choice == "skip":
-        return ""
+    if choice == "ignore":
+        return _NO_LYRICS
     return model_size   # "download" — model now cached
 
 
@@ -706,10 +711,11 @@ class SingleTrackWidget(QWidget):
             _t, _a, _u = title, artist, url
             _m = self._settings.get("whisper_model", "base")
             _m = _check_whisper_model(self, _m)
-            if _m is None:   # user cancelled
+            if _m is None:          # user cancelled → abort
                 return
-            ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
-            ydl_opts["_target_codec"]    = codec
+            if _m is not _NO_LYRICS:  # user didn't ignore → set up lyrics
+                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
+                ydl_opts["_target_codec"]    = codec
 
         self._manager.add_download(
             url, ydl_opts, {"title": title or url, "thumbnail": thumb}
@@ -939,7 +945,7 @@ class CollectionWidget(QWidget):
         _whisper_m = self._settings.get("whisper_model", "base")
         if fetch_lyr:
             _whisper_m = _check_whisper_model(self, _whisper_m)
-            if _whisper_m is None:   # user cancelled
+            if _whisper_m is None:   # user cancelled → abort
                 return
 
         for idx in selected_idx:
@@ -972,7 +978,7 @@ class CollectionWidget(QWidget):
                 "js_runtimes":     {"node": {}},
             }
 
-            if fetch_lyr and title:
+            if fetch_lyr and title and _whisper_m is not _NO_LYRICS:
                 _t, _a, _u = title, artist, video_url
                 _m = _whisper_m
                 ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
