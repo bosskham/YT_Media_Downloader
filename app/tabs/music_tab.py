@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QStackedWidget,
+    QMessageBox, QProgressBar, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -374,8 +374,9 @@ def _is_whisper_model_cached(model_size: str) -> bool:
 
 
 class _WhisperDownloadThread(QThread):
-    """Downloads a faster-whisper model in the background."""
-    done = Signal(bool, str)   # (success, error_message)
+    """Downloads a faster-whisper model with byte-level progress reporting."""
+    progress = Signal(int, str)   # (percent 0-100, status_text)
+    done     = Signal(bool, str)  # (success, error_message)
 
     def __init__(self, model_size: str, parent=None) -> None:
         super().__init__(parent)
@@ -383,8 +384,41 @@ class _WhisperDownloadThread(QThread):
 
     def run(self) -> None:
         try:
+            _sig  = self.progress
+            _size = self._model_size
+
+            # Try progress-tracked download via huggingface_hub + tqdm.
+            # Both are guaranteed to be present when faster-whisper is installed.
+            try:
+                from tqdm import tqdm as _BaseTqdm
+                from huggingface_hub import snapshot_download
+
+                class _ProgressTqdm(_BaseTqdm):
+                    def update(self, n=1):
+                        super().update(n)
+                        if self.total and self.total > 0:
+                            pct  = min(98, int(100 * self.n / self.total))
+                            mb_n = self.n       / 1_048_576
+                            mb_t = self.total   / 1_048_576
+                            _sig.emit(pct, f"Downloading… {mb_n:.1f} / {mb_t:.1f} MB")
+
+                _sig.emit(0, "Connecting…")
+                snapshot_download(
+                    f"Systran/faster-whisper-{_size}",
+                    max_workers=1,          # sequential → clean per-file progress
+                    tqdm_class=_ProgressTqdm,
+                )
+            except ImportError:
+                # huggingface_hub / tqdm missing — fall back, no progress
+                _sig.emit(0, "Downloading model…")
+                from faster_whisper import WhisperModel
+                WhisperModel(_size, device="cpu", compute_type="int8")
+                self.done.emit(True, "")
+                return
+
+            _sig.emit(99, "Initializing model…")
             from faster_whisper import WhisperModel
-            WhisperModel(self._model_size, device="cpu", compute_type="int8")
+            WhisperModel(_size, device="cpu", compute_type="int8")
             self.done.emit(True, "")
         except Exception as exc:
             self.done.emit(False, str(exc))
@@ -418,6 +452,12 @@ class _WhisperModelDialog(QDialog):
         self._label.setWordWrap(True)
         lay.addWidget(self._label)
 
+        self._prog = QProgressBar()
+        self._prog.setRange(0, 100)
+        self._prog.setValue(0)
+        self._prog.hide()
+        lay.addWidget(self._prog)
+
         self._status = QLabel("")
         self._status.setWordWrap(True)
         lay.addWidget(self._status)
@@ -439,18 +479,26 @@ class _WhisperModelDialog(QDialog):
 
     def _start_download(self) -> None:
         self._btn_dl.setEnabled(False)
-        self._btn_skip.setEnabled(False)
-        self._btn_cancel.setEnabled(False)
-        self._status.setText("Downloading model… this may take a few minutes.")
+        self._btn_ignore.setEnabled(False)
+        self._prog.show()
+        self._prog.setValue(0)
+        self._status.setText("Connecting…")
         self._thread = _WhisperDownloadThread(self._model_size, self)
+        self._thread.progress.connect(self._on_progress)
         self._thread.done.connect(self._on_done)
         self._thread.start()
 
+    def _on_progress(self, pct: int, text: str) -> None:
+        self._prog.setValue(pct)
+        self._status.setText(text)
+
     def _on_done(self, success: bool, error: str) -> None:
         if success:
+            self._prog.setValue(100)
             self._choice = "download"
             self.accept()
         else:
+            self._prog.hide()
             self._status.setText(f"Download failed: {error}")
             self._btn_dl.setEnabled(True)
             self._btn_ignore.setEnabled(True)
