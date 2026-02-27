@@ -149,7 +149,7 @@ class DownloadWorker(QThread):
 
                 # After audio extraction, crop the thumbnail to square BEFORE
                 # EmbedThumbnail runs so the embedded art is always square.
-                if d.get("postprocessor") == "FFmpegExtractAudio":
+                if d.get("postprocessor") == "ExtractAudio":
                     thumb = (info.get("__thumbnail_filename")
                              or next((t.get("filepath", "") for t in
                                       reversed(info.get("thumbnails", []))
