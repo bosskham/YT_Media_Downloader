@@ -10,55 +10,28 @@ from PySide6.QtCore import QThread, Signal
 from ..settings import resource_path
 
 
-def _crop_thumbnail_square(thumb_path: str, info_dict: dict | None = None) -> str:
-    """
-    Center-crop thumbnail to square and convert to JPEG in-place.
-    Returns the final thumbnail path (may change extension if .webp → .jpg).
-    Passes info_dict so __thumbnail_filename is updated when the file is renamed.
-    """
+def _crop_thumbnail_square(thumb_path: str) -> None:
+    """Center-crop a JPEG thumbnail to square in-place using Pillow."""
     import sys
     try:
         from PIL import Image
         img = Image.open(thumb_path)
-        orig_fmt = img.format  # capture BEFORE any operation clears it (crop() sets it to None)
         w, h = img.size
-
-        # Crop to square
-        if w != h:
-            size = min(w, h)
-            left = (w - size) // 2
-            top  = (h - size) // 2
-            img  = img.crop((left, top, left + size, top + size))
-            print(f"[thumbnail] cropped {w}x{h} → {size}x{size}  ({thumb_path!r})",
-                  file=sys.stderr, flush=True)
-
-        # Convert non-JPEG formats to JPEG so ffmpeg can always embed them.
-        # WebP in particular causes "Conversion failed!" when EmbedThumbnail runs.
-        base, ext = os.path.splitext(thumb_path)
-        if orig_fmt in ("WEBP", "PNG", "BMP", "GIF") or ext.lower() in (".webp", ".png", ".bmp"):
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            jpg_path = base + ".jpg"
-            img.save(jpg_path, format="JPEG", quality=95)
-            os.remove(thumb_path)
-            print(f"[thumbnail] converted {orig_fmt or ext} → JPEG  ({jpg_path!r})",
-                  file=sys.stderr, flush=True)
-            # Update info_dict so EmbedThumbnail finds the renamed file
-            if info_dict is not None:
-                info_dict["__thumbnail_filename"] = jpg_path
-                for t in info_dict.get("thumbnails", []):
-                    if t.get("filepath") == thumb_path:
-                        t["filepath"] = jpg_path
-            return jpg_path
-        else:
-            img.save(thumb_path, format=orig_fmt or "JPEG")
-            return thumb_path
-
+        if w == h:
+            return
+        size = min(w, h)
+        left = (w - size) // 2
+        top  = (h - size) // 2
+        img  = img.crop((left, top, left + size, top + size))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        img.save(thumb_path, format="JPEG", quality=95)
+        print(f"[thumbnail] cropped {w}x{h} → {size}x{size}  ({thumb_path!r})",
+              file=sys.stderr, flush=True)
     except ImportError:
         pass  # Pillow not installed — skip crop
     except Exception as exc:
         print(f"[thumbnail] crop error: {exc!r}", file=sys.stderr, flush=True)
-    return thumb_path
 
 
 def _fmt_speed(bps: float | None) -> str:
@@ -173,15 +146,16 @@ class DownloadWorker(QThread):
                     else:
                         final_filepath.append(fp)
 
-                # After audio extraction, crop the thumbnail to square BEFORE
-                # EmbedThumbnail runs so the embedded art is always square.
-                if d.get("postprocessor") == "ExtractAudio":
+                # Crop the thumbnail to square AFTER FFmpegThumbnailsConvertor has
+                # already converted it to JPEG (so it's a plain .jpg at this point)
+                # and BEFORE EmbedThumbnail embeds it.
+                if d.get("postprocessor") == "ThumbnailsConvertor":
                     thumb = (info.get("__thumbnail_filename")
                              or next((t.get("filepath", "") for t in
                                       reversed(info.get("thumbnails", []))
                                       if t.get("filepath")), ""))
                     if thumb and os.path.isfile(thumb):
-                        _crop_thumbnail_square(thumb, info)
+                        _crop_thumbnail_square(thumb)
 
         opts = {
             **self.ydl_opts,

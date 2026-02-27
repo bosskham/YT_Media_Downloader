@@ -71,6 +71,9 @@ def _fmt_dur(secs: int | None) -> str:
 def _build_audio_postprocessors(codec: str, quality: str, embed_thumb: bool) -> list[dict]:
     pp = [{"key": "FFmpegExtractAudio", "preferredcodec": codec, "preferredquality": quality}]
     if embed_thumb:
+        # Convert thumbnail to JPEG first (YouTube serves WebP; ffmpeg embed needs JPEG).
+        # FFmpegThumbnailsConvertor properly updates info_dict so EmbedThumbnail finds the file.
+        pp.append({"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
         pp.append({"key": "EmbedThumbnail"})
     pp.append({"key": "FFmpegMetadata", "add_metadata": True})
     return pp
