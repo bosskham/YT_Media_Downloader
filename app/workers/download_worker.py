@@ -131,6 +131,21 @@ class DownloadWorker(QThread):
         def postprocessor_hook(d: dict) -> None:
             if self._cancel_event.is_set():
                 raise yt_dlp.utils.DownloadCancelled()
+
+            # Crop thumbnail BEFORE EmbedThumbnail reads it from disk.
+            # "started" fires synchronously just before pp.run() — so we modify
+            # the file on disk and EmbedThumbnail picks up our cropped version.
+            if d.get("status") == "started" and d.get("postprocessor") == "EmbedThumbnail":
+                import sys as _sys
+                info = d.get("info_dict", {})
+                thumb = (info.get("__thumbnail_filename")
+                         or next((t.get("filepath", "") for t in
+                                  reversed(info.get("thumbnails", []))
+                                  if t.get("filepath")), ""))
+                if thumb and os.path.isfile(thumb):
+                    _crop_thumbnail_square(thumb)
+                return
+
             if d.get("status") == "finished":
                 self.status_changed.emit(self.download_id, "downloading")
                 # Capture the actual output filepath after each postprocessor
@@ -145,17 +160,6 @@ class DownloadWorker(QThread):
                         final_filepath[0] = fp
                     else:
                         final_filepath.append(fp)
-
-                # Crop the thumbnail to square AFTER FFmpegThumbnailsConvertor has
-                # already converted it to JPEG (so it's a plain .jpg at this point)
-                # and BEFORE EmbedThumbnail embeds it.
-                if d.get("postprocessor") == "ThumbnailsConvertor":
-                    thumb = (info.get("__thumbnail_filename")
-                             or next((t.get("filepath", "") for t in
-                                      reversed(info.get("thumbnails", []))
-                                      if t.get("filepath")), ""))
-                    if thumb and os.path.isfile(thumb):
-                        _crop_thumbnail_square(thumb)
 
         opts = {
             **self.ydl_opts,
