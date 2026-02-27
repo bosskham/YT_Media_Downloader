@@ -16,8 +16,7 @@
 #   if you need a fully self-contained distribution.
 #
 # Optional packages (include them in your venv before building to bundle them):
-#   pip install faster-whisper pykakasi pypinyin unidecode
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121  # CUDA
+#   pip install syncedlyrics ytmusicapi pykakasi pypinyin unidecode
 #
 # Output: dist/YT-DLP-GUI/  (one-dir bundle)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,11 +102,6 @@ _hidden = [
     "mutagen.mp3",
     "mutagen.ogg",
     "mutagen.oggvorbis",
-    # ── tqdm (used by ctranslate2/faster-whisper; disabled_tqdm needs _lock) ──
-    "tqdm",
-    "tqdm.auto",
-    "tqdm.std",
-    "tqdm.utils",
     # ── stdlib extras sometimes missed by the analyser ────────────────────────
     "urllib.request",
     "http.cookiejar",
@@ -115,30 +109,28 @@ _hidden = [
     "email.mime.multipart",
 ]
 
-# ── Optional: faster-whisper + romanization libs ──────────────────────────────
+try:
+    import ytmusicapi  # noqa: F401
+    _hidden += [
+        "ytmusicapi",
+        "ytmusicapi.ytmusic",
+        "ytmusicapi.mixins.browsing",
+        "ytmusicapi.mixins.watch",
+    ]
+    print("[INFO] ytmusicapi found — will be bundled.")
+except ImportError:
+    print("[INFO] ytmusicapi not installed — YouTube Music official lyrics will not be bundled.")
+
+# ── Optional: lyrics + romanization libs ─────────────────────────────────────
 # Each block is conditional: only added when the package is actually installed
 # in the build venv.  Missing packages are skipped gracefully.
 
 try:
-    import faster_whisper  # noqa: F401
-    _hidden += [
-        "faster_whisper",
-        "faster_whisper.audio",
-        "faster_whisper.transcribe",
-        "faster_whisper.tokenizer",
-        "faster_whisper.utils",
-        "faster_whisper.vad",
-        "ctranslate2",
-        "tokenizers",
-        "huggingface_hub",
-        "huggingface_hub.file_download",
-        "huggingface_hub._snapshot_download",   # used by _WhisperDownloadThread
-        "huggingface_hub.utils",
-        "filelock",                              # huggingface_hub cache locking
-    ]
-    print("[INFO] faster-whisper found — will be bundled.")
+    import syncedlyrics  # noqa: F401
+    _hidden += ["syncedlyrics"]
+    print("[INFO] syncedlyrics found — will be bundled.")
 except ImportError:
-    print("[INFO] faster-whisper not installed — transcription fallback will not be bundled.")
+    print("[INFO] syncedlyrics not installed — multi-provider lyrics will not be bundled.")
 
 try:
     import pykakasi  # noqa: F401
@@ -161,13 +153,6 @@ try:
 except ImportError:
     print("[INFO] unidecode not installed — fallback romanization will not be bundled.")
 
-try:
-    import torch  # noqa: F401
-    _hidden += ["torch", "torch.cuda"]
-    print("[INFO] torch found — will be bundled (adds ~1-2 GB).")
-except ImportError:
-    print("[INFO] torch not installed — CUDA acceleration will not be bundled.")
-
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
     [str(ROOT / "main.py")],
@@ -183,8 +168,6 @@ a = Analysis(
         "tkinter",
         "matplotlib",
         "scipy",
-        "PIL",
-        # numpy is kept: faster-whisper depends on it
     ],
     noarchive=False,
     optimize=0,

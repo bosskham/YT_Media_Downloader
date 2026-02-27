@@ -25,7 +25,9 @@ def _crop_thumbnail_square(thumb_path: str) -> None:
         img  = img.crop((left, top, left + size, top + size))
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
-        img.save(thumb_path, format="JPEG", quality=95)
+        ext = os.path.splitext(thumb_path)[1].lower()
+        fmt = "WEBP" if ext == ".webp" else "JPEG"
+        img.save(thumb_path, format=fmt, quality=95)
         print(f"[thumbnail] cropped {w}x{h} → {size}x{size}  ({thumb_path!r})",
               file=sys.stderr, flush=True)
     except ImportError:

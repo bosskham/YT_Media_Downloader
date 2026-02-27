@@ -2,19 +2,8 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 from pathlib import Path
 from typing import Optional
-
-# Serializes ALL faster-whisper operations (construction + transcribe).
-# ctranslate2 / CUDA is not safe to run on multiple threads simultaneously:
-# two concurrent .transcribe() calls on the same GPU will crash the process.
-# The lock also prevents the tqdm partial-init race on PyInstaller builds.
-_whisper_model_lock: threading.Lock = threading.Lock()
-
-# Cached WhisperModel instances keyed by (model_size, device, compute_type).
-# Avoids reloading model weights (~seconds) on every song.
-_whisper_model_cache: dict = {}
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -76,8 +65,8 @@ def _build_audio_postprocessors(codec: str, quality: str, embed_thumb: bool) -> 
     return pp
 
 
-def _vtt_to_lrc(vtt_text: str, lang: str) -> str:
-    """Convert WebVTT subtitle text to LRC format with optional romanization."""
+def _vtt_to_lrc(vtt_text: str, lang: str = "") -> str:
+    """Convert WebVTT subtitle text to LRC format."""
     lrc_lines: list[str] = []
     seen: set[str] = set()
     for block in re.split(r'\n\n+', vtt_text.strip()):
@@ -103,11 +92,7 @@ def _vtt_to_lrc(vtt_text: str, lang: str) -> str:
         lrc_m  = int(total_s) // 60
         lrc_s  = total_s % 60
         ts     = f"[{lrc_m:02d}:{lrc_s:05.2f}]"
-        romaji = _romanize_text(raw, lang)
-        if romaji and romaji != raw:
-            lrc_lines.append(f"{ts}{raw} ♪ {romaji}")
-        else:
-            lrc_lines.append(f"{ts}{raw}")
+        lrc_lines.append(f"{ts}{raw}")
     return "\n".join(lrc_lines)
 
 
@@ -183,158 +168,332 @@ def _youtube_lyrics(url: str) -> str | None:
     return None
 
 
-def _romanize_text(text: str, lang: str) -> str:
+def _fetch_album_art(url: str, title: str, artist: str) -> bytes | None:
     """
-    Convert text to a Latin/romanized form for the given ISO language code.
-    Returns the original string unchanged for already-Latin scripts.
+    Fetch the original square album art for a song.
+
+    Sources tried in order:
+      1. iTunes Search API  — free, no auth, always returns square art (1200×1200)
+      2. ytmusicapi search  — YouTube Music catalog (unauthenticated; often works)
+      3. ytmusicapi watch_playlist — exact video match (fails for some videos without auth)
+
+    Returns raw JPEG bytes or None if all sources fail.
     """
-    if not text or not lang:
-        return text
-    base_lang = lang.split("-")[0].lower()
-    # Latin-script languages need no conversion
-    _LATIN = {"en", "es", "fr", "de", "pt", "it", "nl", "pl", "sv", "ro",
-              "ca", "la", "af", "cy", "id", "ms", "tr", "vi"}
-    if base_lang in _LATIN:
-        return text
-    if base_lang == "ja":
+    import sys, json, re as _re
+    import urllib.request as _ur, urllib.parse as _up
+
+    # ── 1. iTunes Search API (most reliable — free, no auth) ──────────────────
+    if title:
+        try:
+            query     = _up.quote_plus(f"{title} {artist}".strip())
+            itunes_url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=5"
+            req = _ur.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            results = data.get("results", [])
+            if results:
+                art_url = results[0].get("artworkUrl100", "")
+                if art_url:
+                    # Replace 100x100bb with 1200x1200bb for maximum resolution
+                    art_url = art_url.replace("100x100bb", "1200x1200bb")
+                    req2 = _ur.Request(art_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with _ur.urlopen(req2, timeout=15) as r2:
+                        img = r2.read()
+                    print(f"[cover-art] iTunes: {len(img):,} bytes", file=sys.stderr, flush=True)
+                    return img
+        except Exception as exc:
+            print(f"[cover-art] iTunes failed: {exc!r}", file=sys.stderr, flush=True)
+
+    # ── 2+3. ytmusicapi fallback ───────────────────────────────────────────────
+    try:
+        from ytmusicapi import YTMusic
+    except ImportError:
+        return None
+
+    yt = YTMusic()
+    thumb_url: str | None = None
+
+    # 2. Search by title + artist
+    if title:
+        try:
+            query   = f"{title} {artist}".strip()
+            results = yt.search(query, filter="songs", limit=3)
+            if results:
+                thumbs = results[0].get("thumbnails", [])
+                if thumbs:
+                    thumb_url = thumbs[-1]["url"]
+                    print(f"[cover-art] ytmusicapi search: query={query!r}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[cover-art] ytmusicapi search failed: {exc!r}", file=sys.stderr, flush=True)
+
+    # 3. Exact video match via watch_playlist
+    if not thumb_url:
+        _m = _re.search(r'(?:v=|youtu\.be/|/v/|/embed/)([A-Za-z0-9_-]{11})', url)
+        if _m:
+            try:
+                wp = yt.get_watch_playlist(videoId=_m.group(1))
+                if wp and wp.get("tracks"):
+                    thumbs = wp["tracks"][0].get("thumbnail", [])
+                    if thumbs:
+                        thumb_url = thumbs[-1]["url"]
+                        print("[cover-art] ytmusicapi watch_playlist", file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[cover-art] ytmusicapi watch_playlist failed: {exc!r}", file=sys.stderr, flush=True)
+
+    if not thumb_url:
+        print("[cover-art] all sources failed", file=sys.stderr, flush=True)
+        return None
+
+    # Upscale lh3.googleusercontent.com URLs to 1200×1200
+    thumb_url = _re.sub(r'=w\d+-h\d+.*$', '=w1200-h1200-l90-rj', thumb_url)
+    try:
+        req = _ur.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req, timeout=15) as r:
+            img = r.read()
+        print(f"[cover-art] ytmusicapi: {len(img):,} bytes", file=sys.stderr, flush=True)
+        return img
+    except Exception as exc:
+        print(f"[cover-art] ytmusicapi download failed: {exc!r}", file=sys.stderr, flush=True)
+        return None
+
+
+def _embed_cover(filepath: str, img_bytes: bytes) -> None:
+    """Embed album art bytes into an audio file, replacing any existing cover."""
+    import sys
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".mp3":
+            from mutagen.id3 import ID3, APIC, ID3NoHeaderError
+            try:
+                audio = ID3(filepath)
+            except ID3NoHeaderError:
+                audio = ID3()
+            audio.delall("APIC")
+            audio.add(APIC(encoding=0, mime="image/jpeg", type=3, desc="Cover", data=img_bytes))
+            audio.save(filepath)
+            print(f"[ytmusic-art] saved APIC cover to {filepath!r}", file=sys.stderr, flush=True)
+        elif ext == ".flac":
+            from mutagen.flac import FLAC, Picture
+            audio = FLAC(filepath)
+            audio.clear_pictures()
+            pic = Picture()
+            pic.type = 3
+            pic.mime = "image/jpeg"
+            pic.data = img_bytes
+            audio.add_picture(pic)
+            audio.save()
+            print(f"[ytmusic-art] saved FLAC cover to {filepath!r}", file=sys.stderr, flush=True)
+        elif ext in (".m4a", ".aac", ".mp4"):
+            from mutagen.mp4 import MP4, MP4Cover
+            audio = MP4(filepath)
+            audio["covr"] = [MP4Cover(img_bytes, MP4Cover.FORMAT_JPEG)]
+            audio.save()
+            print(f"[ytmusic-art] saved M4A cover to {filepath!r}", file=sys.stderr, flush=True)
+        else:
+            print(f"[ytmusic-art] unsupported ext {ext!r} — skipping", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[ytmusic-art] embed error: {exc!r}", file=sys.stderr, flush=True)
+
+
+def _ytmusicapi_lyrics(url: str) -> str | None:
+    """
+    Fetch lyrics from YouTube Music's official lyrics API (LyricFind) via ytmusicapi.
+    Supports timed lyrics (→ LRC) when available, plain text otherwise.
+    No authentication required for public videos.
+    Returns LRC or plain-text string, or None on failure / no lyrics.
+    """
+    import sys, re as _re
+    try:
+        from ytmusicapi import YTMusic
+    except ImportError:
+        return None
+
+    # Extract video ID from any YouTube / YouTube Music URL
+    _m = _re.search(r'(?:v=|youtu\.be/|/v/|/embed/)([A-Za-z0-9_-]{11})', url)
+    if not _m:
+        return None
+    video_id = _m.group(1)
+
+    print(f"[ytmusic] fetching lyrics  videoId={video_id!r}", file=sys.stderr, flush=True)
+    try:
+        yt = YTMusic()
+        wp = yt.get_watch_playlist(videoId=video_id)
+        browse_id = wp.get("lyrics") if wp else None
+        if not browse_id:
+            print("[ytmusic] no lyrics browseId in watch playlist", file=sys.stderr, flush=True)
+            return None
+
+        lyrics_data = yt.get_lyrics(browse_id, timestamps=True)
+        if not lyrics_data:
+            return None
+
+        source          = lyrics_data.get("source", "")
+        has_timestamps  = lyrics_data.get("hasTimestamps", False)
+        lyrics_content  = lyrics_data.get("lyrics")
+
+        if has_timestamps and isinstance(lyrics_content, list):
+            # TimedLyrics → LRC format
+            # ytmusicapi ≥ 1.8 returns LyricLine objects; older versions return dicts.
+            lrc_lines: list[str] = []
+            for line in lyrics_content:
+                if isinstance(line, dict):
+                    start_ms = line.get("startMs", "0") or "0"
+                    text     = (line.get("lyric") or line.get("text") or "").strip()
+                else:
+                    start_ms = str(getattr(line, "startMs", None) or "0")
+                    text     = (getattr(line, "text", None) or getattr(line, "lyric", None) or "").strip()
+                if not text:
+                    continue
+                start_s = int(start_ms) / 1000
+                m_val   = int(start_s // 60)
+                s_val   = start_s % 60
+                lrc_lines.append(f"[{m_val:02d}:{s_val:05.2f}]{text}")
+            if lrc_lines:
+                print(f"[ytmusic] timed lyrics: {len(lrc_lines)} lines  source={source!r}",
+                      file=sys.stderr, flush=True)
+                return "\n".join(lrc_lines)
+
+        if isinstance(lyrics_content, str) and lyrics_content.strip():
+            print(f"[ytmusic] plain lyrics: {len(lyrics_content)} chars  source={source!r}",
+                  file=sys.stderr, flush=True)
+            return lyrics_content.strip()
+
+        return None
+    except Exception as exc:
+        print(f"[ytmusic] error: {exc!r}", file=sys.stderr, flush=True)
+        return None
+
+
+def _detect_script(text: str) -> str:
+    """Return 'ja', 'zh', 'ko', 'other', or 'latin' from dominant Unicode block."""
+    kana = cjk = hangul = other_nl = 0
+    for ch in text:
+        cp = ord(ch)
+        if 0x3040 <= cp <= 0x30FF:   kana    += 1   # Hiragana / Katakana
+        elif 0x4E00 <= cp <= 0x9FFF: cjk     += 1   # CJK unified
+        elif 0xAC00 <= cp <= 0xD7AF: hangul  += 1   # Hangul
+        elif cp > 0x02FF and not ch.isspace(): other_nl += 1
+    total_nl = kana + cjk + hangul + other_nl
+    if total_nl == 0:
+        return "latin"
+    if kana or (kana + cjk > hangul + other_nl): return "ja"
+    if cjk:    return "zh"
+    if hangul: return "ko"
+    return "other"
+
+
+def _romanize_line(text: str, script: str) -> str | None:
+    """Romanize one line of text; return None if unavailable or identical to input."""
+    if script == "ja":
         try:
             import pykakasi
             kks = pykakasi.kakasi()
-            return " ".join(d["hepburn"] for d in kks.convert(text) if d["hepburn"]).strip() or text
+            r = " ".join(d["hepburn"] for d in kks.convert(text) if d["hepburn"]).strip()
+            return r or None
         except Exception:
             pass
-    if base_lang in ("zh", "zh-cn", "zh-tw", "yue"):
+    if script == "zh":
         try:
             from pypinyin import lazy_pinyin, Style
-            return " ".join(lazy_pinyin(text, style=Style.TONE)).strip() or text
+            r = " ".join(lazy_pinyin(text, style=Style.TONE)).strip()
+            return r or None
         except Exception:
             pass
-    # Korean + Arabic + Thai + everything else → unidecode approximation
-    try:
-        from unidecode import unidecode
-        return unidecode(text)
-    except Exception:
-        pass
-    return text
-
-
-def _transcribe_with_whisper(filepath: str, model_size: str = "base") -> str | None:
-    """
-    Transcribe an audio file and romanize each segment.
-    Uses faster-whisper as primary engine (no HF token / pyannote required).
-    Falls back to whisperX if faster-whisper is not importable.
-    Returns LRC-formatted text or None on failure.
-    """
-    import sys, os as _os
-    print(f"[whisper] transcribing {filepath!r}  model={model_size!r}", file=sys.stderr, flush=True)
-
-    # Ensure bundled ffmpeg is on PATH (needed by both faster-whisper and whisperX)
-    from ..settings import resource_path as _rp
-    _ffmpeg_dir = _rp("bin")
-    if _ffmpeg_dir.is_dir():
-        _os.environ["PATH"] = str(_ffmpeg_dir) + _os.pathsep + _os.environ.get("PATH", "")
-
-    # Detect device
-    try:
-        import torch
-        device       = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if device == "cuda" else "int8"
-    except ImportError:
-        device, compute_type = "cpu", "int8"
-    print(f"[whisper] device={device}  compute_type={compute_type}", file=sys.stderr, flush=True)
-
-    segments_raw: list[dict] = []
-    lang = ""
-
-    # ── Primary: faster-whisper (no pyannote / no HF token required) ──────────
-    try:
-        from faster_whisper import WhisperModel
-        # Only use the model if it is already cached locally.
-        # Loading an uncached model triggers a silent ~145 MB download that makes
-        # the card appear stuck in "Lyrics…" for several minutes with no feedback.
-        import os as _os2
-        from pathlib import Path as _Path2
-        _hf_home = _Path2(_os2.environ.get("HF_HOME",
-                          _Path2.home() / ".cache" / "huggingface"))
-        _model_cache = _hf_home / "hub" / f"models--Systran--faster-whisper-{model_size}"
-        if not _model_cache.exists():
-            print(f"[whisper] model '{model_size}' not cached at {_model_cache} — skipping", file=sys.stderr, flush=True)
-            return None
-        with _whisper_model_lock:
-            # Load model once; reuse cached instance for subsequent songs.
-            _key = (model_size, device, compute_type)
-            if _key not in _whisper_model_cache:
-                _whisper_model_cache[_key] = WhisperModel(
-                    model_size, device=device, compute_type=compute_type
-                )
-            model = _whisper_model_cache[_key]
-            # Hold the lock for the full transcription: ctranslate2/CUDA is not
-            # thread-safe — two concurrent .transcribe() calls crash the process.
-            segs, info = model.transcribe(filepath, beam_size=5)
-            lang = info.language or ""
-            # Consume the lazy generator inside the lock.
-            segments_raw = [{"start": s.start, "text": s.text} for s in segs]
-        print(f"[whisper] faster-whisper  language={lang!r}  segments={len(segments_raw)}", file=sys.stderr, flush=True)
-    except ImportError:
-        # ── Fallback: whisperX (needs pyannote + HF token on first run) ───────
+    if script in ("ko", "other"):
         try:
-            import whisperx
-            model  = whisperx.load_model(model_size, device=device, compute_type=compute_type)
-            audio  = whisperx.load_audio(filepath)
-            result = model.transcribe(audio, batch_size=16 if device == "cuda" else 4)
-            lang   = result.get("language", "")
-            segments_raw = [
-                {"start": s.get("start", 0), "text": s.get("text", "")}
-                for s in result.get("segments", [])
-            ]
-            print(f"[whisper] whisperX  language={lang!r}  segments={len(segments_raw)}", file=sys.stderr, flush=True)
-        except ImportError:
-            print("[whisper] neither faster-whisper nor whisperX installed — skipping", file=sys.stderr, flush=True)
-            return None
-        except Exception as exc:
-            print(f"[whisper] whisperX error: {exc!r}", file=sys.stderr, flush=True)
-            return None
-    except Exception as exc:
-        print(f"[whisper] faster-whisper error: {exc!r}", file=sys.stderr, flush=True)
-        return None
+            from unidecode import unidecode
+            r = unidecode(text).strip()
+            return r or None
+        except Exception:
+            pass
+    return None
 
-    if not segments_raw:
-        return None
 
-    lrc_lines: list[str] = []
-    for seg in segments_raw:
-        start = float(seg.get("start", 0))
-        text  = seg.get("text", "").strip()
-        if not text:
+def _romanize_lyrics(lrc: str) -> str:
+    """
+    Walk each line of an LRC or plain-text lyrics string.
+    For non-Latin lines, append ' ♪ <romanized>' on the same line.
+    LRC timestamps ([mm:ss.xx]) are stripped for script detection but preserved in output.
+    """
+    out: list[str] = []
+    for line in lrc.splitlines():
+        body = re.sub(r'^\[\d+:\d+\.\d+\]', '', line).strip()
+        script = _detect_script(body)
+        if script == "latin" or not body:
+            out.append(line)
             continue
-        m  = int(start // 60)
-        s  = start % 60
-        ts = f"[{m:02d}:{s:05.2f}]"
-        romaji = _romanize_text(text, lang)
-        if romaji and romaji != text:
-            lrc_lines.append(f"{ts}{text} ♪ {romaji}")
-        else:
-            lrc_lines.append(f"{ts}{text}")
-
-    lrc = "\n".join(lrc_lines)
-    print(f"[whisper] built {len(lrc_lines)} LRC lines", file=sys.stderr, flush=True)
-    return lrc or None
+        romaji = _romanize_line(body, script)
+        out.append(f"{line} ♪ {romaji}" if (romaji and romaji != body) else line)
+    return "\n".join(out)
 
 
-def _fetch_and_embed_lyrics(filepath: str, url: str, title: str, artist: str, whisper_model: str = "base") -> None:
-    """Fetches lyrics (YouTube subtitles → local transcription) and embeds via mutagen."""
+def _syncedlyrics_search(title: str, artist: str) -> str | None:
+    """
+    Search for synced (or plain) lyrics via the syncedlyrics library.
+    Tries multiple providers (NetEase, Musixmatch, Lyricsify, Genius, …) without auth.
+    Returns LRC string or None.
+    """
     import sys
-    print(f"[lyrics] filepath={filepath!r}", file=sys.stderr, flush=True)
-    print(f"[lyrics] title={title!r}  artist={artist!r}", file=sys.stderr, flush=True)
+    try:
+        import syncedlyrics
+    except ImportError:
+        print("[lyrics] syncedlyrics not installed — skipping", file=sys.stderr, flush=True)
+        return None
+    query = f"{title} {artist}".strip()
+    print(f"[lyrics] syncedlyrics: {query!r}", file=sys.stderr, flush=True)
+    try:
+        lrc = syncedlyrics.search(query)
+        if lrc:
+            print(f"[lyrics] syncedlyrics: {len(lrc)} chars", file=sys.stderr, flush=True)
+        return lrc or None
+    except Exception as exc:
+        print(f"[lyrics] syncedlyrics error: {exc!r}", file=sys.stderr, flush=True)
+        return None
+
+
+def _fetch_and_embed_lyrics(
+    filepath: str,
+    url: str,
+    title: str,
+    artist: str,
+    embed_cover: bool = False,
+    fetch_lyrics: bool = True,
+) -> None:
+    """
+    Post-download callback: fetch & embed cover art + lyrics.
+    Cover art: iTunes API (square) overwrites yt-dlp's 16:9 video thumbnail.
+    Lyrics:    YouTube VTT → ytmusicapi LyricFind → syncedlyrics (multi-provider).
+    Non-Latin lyrics are romanized (original ♪ romanized per line).
+    fetch_lyrics=False skips all lyrics tiers (cover-art-only mode).
+    """
+    import sys
+    print(f"[post-dl] filepath={filepath!r}", file=sys.stderr, flush=True)
+    print(f"[post-dl] title={title!r}  artist={artist!r}  embed_cover={embed_cover}  fetch_lyrics={fetch_lyrics}",
+          file=sys.stderr, flush=True)
+
+    # Cover art: fetch original square album art and overwrite yt-dlp's 16:9 thumbnail.
+    if embed_cover:
+        cover = _fetch_album_art(url, title, artist)
+        if cover:
+            _embed_cover(filepath, cover)
+
+    if not fetch_lyrics:
+        return
 
     # Tier 0: YouTube subtitle / caption tracks (official lyrics or Google ASR)
     lrc: str | None = _youtube_lyrics(url) if url else None
 
-    # Tier 1: faster-whisper / whisperX local transcription
-    if not lrc and whisper_model:
-        lrc = _transcribe_with_whisper(filepath, whisper_model)
+    # Tier 1: YouTube Music official lyrics via ytmusicapi (LyricFind — timed when available)
+    if not lrc and url:
+        lrc = _ytmusicapi_lyrics(url)
 
+    # Tier 2: syncedlyrics (NetEase, Musixmatch, Lyricsify, Genius, …)
+    if not lrc and title:
+        lrc = _syncedlyrics_search(title, artist)
+
+    # Romanize non-Latin lyrics (original ♪ romanized per line)
     if lrc:
+        lrc = _romanize_lyrics(lrc)
         print(f"[lyrics] found {len(lrc)} chars — embedding…", file=sys.stderr, flush=True)
         _embed_lyrics(filepath, lrc, title, artist)
     else:
@@ -371,197 +530,6 @@ def _embed_lyrics(filepath: str, lyrics: str, title: str, artist: str) -> None:
             print(f"[lyrics] unsupported ext {ext!r} — skipping embed", file=sys.stderr, flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[lyrics] embed error: {exc!r}", file=sys.stderr, flush=True)
-
-
-# ── Whisper model check / download dialog ────────────────────────────────────
-
-_NO_LYRICS = object()   # sentinel: user chose Ignore — proceed with download but no lyrics
-
-
-def _is_whisper_model_cached(model_size: str) -> bool:
-    """Returns True if the faster-whisper model files are already cached locally."""
-    import os as _os
-    from pathlib import Path as _Path
-    _hf = _Path(_os.environ.get("HF_HOME", _Path.home() / ".cache" / "huggingface"))
-    return (_hf / "hub" / f"models--Systran--faster-whisper-{model_size}").exists()
-
-
-class _WhisperDownloadThread(QThread):
-    """Downloads a faster-whisper model with byte-level progress reporting."""
-    progress = Signal(int, str)   # (percent 0-100, status_text)
-    done     = Signal(bool, str)  # (success, error_message)
-
-    def __init__(self, model_size: str, parent=None) -> None:
-        super().__init__(parent)
-        self._model_size = model_size
-
-    def run(self) -> None:
-        try:
-            _sig  = self.progress
-            _size = self._model_size
-
-            # Try progress-tracked download via huggingface_hub + tqdm.
-            # Both are guaranteed to be present when faster-whisper is installed.
-            try:
-                from tqdm import tqdm as _BaseTqdm
-                from huggingface_hub import snapshot_download
-
-                class _ProgressTqdm(_BaseTqdm):
-                    def update(self, n=1):
-                        super().update(n)
-                        if self.total and self.total > 0:
-                            pct  = min(98, int(100 * self.n / self.total))
-                            mb_n = self.n       / 1_048_576
-                            mb_t = self.total   / 1_048_576
-                            _sig.emit(pct, f"Downloading… {mb_n:.1f} / {mb_t:.1f} MB")
-
-                _sig.emit(0, "Connecting…")
-                snapshot_download(
-                    f"Systran/faster-whisper-{_size}",
-                    max_workers=1,          # sequential → clean per-file progress
-                    tqdm_class=_ProgressTqdm,
-                )
-            except ImportError:
-                # huggingface_hub / tqdm missing — fall back, no progress
-                _sig.emit(0, "Downloading model…")
-                from faster_whisper import WhisperModel
-                WhisperModel(_size, device="cpu", compute_type="int8")
-                self.done.emit(True, "")
-                return
-
-            _sig.emit(99, "Initializing model…")
-            from faster_whisper import WhisperModel
-            WhisperModel(_size, device="cpu", compute_type="int8")
-            self.done.emit(True, "")
-        except Exception as exc:
-            self.done.emit(False, str(exc))
-
-
-class _WhisperModelDialog(QDialog):
-    """
-    Shown when the faster-whisper model is not cached locally.
-    Buttons: Download / Ignore / Cancel
-    Call result_choice() after exec() → "download" | "ignore" | "cancel"
-    """
-
-    def __init__(self, model_size: str, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Whisper Model Not Found")
-        self.setMinimumWidth(440)
-        self._model_size = model_size
-        self._choice = "cancel"
-        self._thread: _WhisperDownloadThread | None = None
-
-        lay = QVBoxLayout(self)
-        lay.setSpacing(12)
-
-        self._label = QLabel(
-            f"The <b>faster-whisper '{model_size}'</b> model is not downloaded.\n\n"
-            "It is used to transcribe lyrics when YouTube subtitles are unavailable.\n\n"
-            "<b>Download</b> — download the model now, then fetch lyrics as usual.\n"
-            "<b>Ignore</b> — proceed with the download but skip lyrics entirely.\n"
-            "<b>Cancel</b> — do not start the download."
-        )
-        self._label.setWordWrap(True)
-        lay.addWidget(self._label)
-
-        self._prog = QProgressBar()
-        self._prog.setRange(0, 100)
-        self._prog.setValue(0)
-        self._prog.hide()
-        lay.addWidget(self._prog)
-
-        self._status = QLabel("")
-        self._status.setWordWrap(True)
-        lay.addWidget(self._status)
-
-        btn_row = QHBoxLayout()
-        self._btn_dl     = QPushButton("Download model")
-        self._btn_ignore = QPushButton("Ignore")
-        self._btn_cancel = QPushButton("Cancel")
-        btn_row.addWidget(self._btn_dl)
-        btn_row.addWidget(self._btn_ignore)
-        btn_row.addWidget(self._btn_cancel)
-        lay.addLayout(btn_row)
-
-        self._btn_dl.clicked.connect(self._start_download)
-        self._btn_ignore.clicked.connect(self._ignore)
-        self._btn_cancel.clicked.connect(self._cancel)
-
-    # ── slots ──────────────────────────────────────────────────────────────────
-
-    def _start_download(self) -> None:
-        self._btn_dl.setEnabled(False)
-        self._btn_ignore.setEnabled(False)
-        self._prog.show()
-        self._prog.setValue(0)
-        self._status.setText("Connecting…")
-        self._thread = _WhisperDownloadThread(self._model_size, self)
-        self._thread.progress.connect(self._on_progress)
-        self._thread.done.connect(self._on_done)
-        self._thread.start()
-
-    def _on_progress(self, pct: int, text: str) -> None:
-        self._prog.setValue(pct)
-        self._status.setText(text)
-
-    def _on_done(self, success: bool, error: str) -> None:
-        if success:
-            self._prog.setValue(100)
-            self._choice = "download"
-            self.accept()
-        else:
-            self._prog.hide()
-            self._status.setText(f"Download failed: {error}")
-            self._btn_dl.setEnabled(True)
-            self._btn_ignore.setEnabled(True)
-            self._btn_cancel.setEnabled(True)
-
-    def _ignore(self) -> None:
-        self._choice = "ignore"
-        self.accept()
-
-    def _cancel(self) -> None:
-        if self._thread and self._thread.isRunning():
-            self._thread.terminate()
-        self._choice = "cancel"
-        self.reject()
-
-    def closeEvent(self, event) -> None:
-        if self._thread and self._thread.isRunning():
-            self._thread.terminate()
-        self._choice = "cancel"
-        super().closeEvent(event)
-
-    def result_choice(self) -> str:
-        return self._choice
-
-
-def _check_whisper_model(parent: QWidget, model_size: str):
-    """
-    Ensure the whisper model is ready.  Must be called from the main thread.
-
-    Returns:
-        model_size (str) — model cached or just downloaded; use full lyrics pipeline
-        _NO_LYRICS       — user chose Ignore; proceed with download, no lyrics at all
-        None             — user cancelled; abort the download entirely
-    """
-    try:
-        import faster_whisper  # noqa: F401
-    except ImportError:
-        return model_size   # faster-whisper not installed; skip dialog, pipeline handles it
-
-    if not model_size or _is_whisper_model_cached(model_size):
-        return model_size   # already ready; no dialog needed
-
-    dlg = _WhisperModelDialog(model_size, parent)
-    dlg.exec()
-    choice = dlg.result_choice()
-    if choice == "cancel":
-        return None
-    if choice == "ignore":
-        return _NO_LYRICS
-    return model_size   # "download" — model now cached
 
 
 # ── options row shared widget ─────────────────────────────────────────────────
@@ -769,14 +737,14 @@ class SingleTrackWidget(QWidget):
         }
 
         if fetch_lyr and title:
+            _t, _a, _u, _c = title, artist, url, embed_thumb
+            ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, c=_c: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=c)
+            ydl_opts["_target_codec"]    = codec
+        elif embed_thumb:
+            # No lyrics, but still replace yt-dlp's 16:9 thumbnail with proper album art
             _t, _a, _u = title, artist, url
-            _m = self._settings.get("whisper_model", "base")
-            _m = _check_whisper_model(self, _m)
-            if _m is None:          # user cancelled → abort
-                return
-            if _m is not _NO_LYRICS:  # user didn't ignore → set up lyrics
-                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
-                ydl_opts["_target_codec"]    = codec
+            ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=True, fetch_lyrics=False)
+            ydl_opts["_target_codec"]    = codec
 
         self._manager.add_download(
             url, ydl_opts, {"title": title or url, "thumbnail": thumb}
@@ -1002,13 +970,6 @@ class CollectionWidget(QWidget):
         use_sub     = self._subfolder_chk.isChecked()
         os.makedirs(out_dir, exist_ok=True)
 
-        # Check whisper model once before queuing any tracks.
-        _whisper_m = self._settings.get("whisper_model", "base")
-        if fetch_lyr:
-            _whisper_m = _check_whisper_model(self, _whisper_m)
-            if _whisper_m is None:   # user cancelled → abort
-                return
-
         for idx in selected_idx:
             num   = idx + 1
             entry = self._entries[idx]
@@ -1039,10 +1000,14 @@ class CollectionWidget(QWidget):
                 "js_runtimes":     {"node": {}},
             }
 
-            if fetch_lyr and title and _whisper_m is not _NO_LYRICS:
+            if fetch_lyr and title:
+                _t, _a, _u, _c = title, artist, video_url, embed_thumb
+                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, c=_c: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=c)
+                ydl_opts["_target_codec"]    = codec
+            elif embed_thumb:
+                # No lyrics, but still replace yt-dlp's 16:9 thumbnail with proper album art
                 _t, _a, _u = title, artist, video_url
-                _m = _whisper_m
-                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, m=_m: _fetch_and_embed_lyrics(fp, u, t, a, m)
+                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=True, fetch_lyrics=False)
                 ydl_opts["_target_codec"]    = codec
 
             self._manager.add_download(

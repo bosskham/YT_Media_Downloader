@@ -37,17 +37,3 @@ def _fix_stream(stream):
 
 sys.stdout = _fix_stream(sys.stdout)
 sys.stderr = _fix_stream(sys.stderr)
-
-# Pre-import tqdm fully in the main thread so it is cached in sys.modules
-# before any worker threads start.  ctranslate2/faster-whisper import tqdm
-# lazily; if two lyrics threads race to import it simultaneously inside a
-# PyInstaller bundle the class can be partially initialised, leaving
-# ctranslate2's disabled_tqdm stub without _lock →
-# AttributeError("type object 'disabled_tqdm' has no attribute '_lock'").
-try:
-    import tqdm          # noqa: F401
-    import tqdm.auto     # noqa: F401
-    import tqdm.std      # noqa: F401
-    import tqdm.utils    # noqa: F401
-except Exception:
-    pass
