@@ -1705,6 +1705,8 @@ class _LyricsThread(QThread):
         total = len(self._files)
         done  = errors = 0
         for filepath in self._files:
+            if self.isInterruptionRequested():
+                break
             try:
                 lrc = _transcribe_with_whisper(filepath, self._model_name)
                 if lrc:
@@ -1802,8 +1804,13 @@ class LyricsTranscribeWidget(QWidget):
         self._transcribe_btn = QPushButton("Transcribe All")
         self._transcribe_btn.setEnabled(False)
         self._transcribe_btn.clicked.connect(self._transcribe_all)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setProperty("role", "secondary")
+        self._cancel_btn.hide()
+        self._cancel_btn.clicked.connect(self._cancel)
         bot.addWidget(self._status)
         bot.addStretch()
+        bot.addWidget(self._cancel_btn)
         bot.addWidget(self._transcribe_btn)
         lay.addLayout(bot)
 
@@ -1856,6 +1863,7 @@ class LyricsTranscribeWidget(QWidget):
 
         self._transcribe_btn.setEnabled(False)
         self._scan_btn.setEnabled(False)
+        self._cancel_btn.show()
         self._progress.setRange(0, len(self._files))
         self._progress.setValue(0)
         self._progress.show()
@@ -1881,7 +1889,15 @@ class LyricsTranscribeWidget(QWidget):
         self._log.addItem(msg)
         self._log.scrollToBottom()
 
+    def _cancel(self) -> None:
+        if self._thread and self._thread.isRunning():
+            self._thread.requestInterruption()
+            self._cancel_btn.setEnabled(False)
+            self._status.setText("Cancelling…")
+
     def _on_done(self, done: int, errors: int) -> None:
+        self._cancel_btn.hide()
+        self._cancel_btn.setEnabled(True)
         self._scan_btn.setEnabled(True)
         self._transcribe_btn.setEnabled(bool(self._files))
         msg = f"Done. {done} file(s) transcribed."
@@ -1919,6 +1935,8 @@ class _CoverEmbedThread(QThread):
         total  = sum(len(af) for _, af in self._tasks)
         done   = errors = 0
         for cover_path, audio_paths in self._tasks:
+            if self.isInterruptionRequested():
+                break
             try:
                 with open(cover_path, "rb") as fh:
                     img_bytes = fh.read()
@@ -1929,6 +1947,8 @@ class _CoverEmbedThread(QThread):
                 self.progress.emit(done, total)
                 continue
             for fpath in audio_paths:
+                if self.isInterruptionRequested():
+                    break
                 try:
                     _embed_cover(fpath, img_bytes)
                     self.log.emit(f"✓  {os.path.basename(fpath)}")
@@ -2005,8 +2025,13 @@ class CoverFixWidget(QWidget):
         self._embed_btn = QPushButton("Embed All")
         self._embed_btn.setEnabled(False)
         self._embed_btn.clicked.connect(self._embed_all)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setProperty("role", "secondary")
+        self._cancel_btn.hide()
+        self._cancel_btn.clicked.connect(self._cancel)
         bot.addWidget(self._status)
         bot.addStretch()
+        bot.addWidget(self._cancel_btn)
         bot.addWidget(self._embed_btn)
         lay.addLayout(bot)
 
@@ -2065,6 +2090,7 @@ class CoverFixWidget(QWidget):
             return
         self._embed_btn.setEnabled(False)
         self._scan_btn.setEnabled(False)
+        self._cancel_btn.show()
 
         total = sum(len(a) for _, a in self._tasks)
         self._progress.setRange(0, total)
@@ -2087,7 +2113,15 @@ class CoverFixWidget(QWidget):
         self._log.addItem(msg)
         self._log.scrollToBottom()
 
+    def _cancel(self) -> None:
+        if self._thread and self._thread.isRunning():
+            self._thread.requestInterruption()
+            self._cancel_btn.setEnabled(False)
+            self._status.setText("Cancelling…")
+
     def _on_done(self, done: int, errors: int) -> None:
+        self._cancel_btn.hide()
+        self._cancel_btn.setEnabled(True)
         self._scan_btn.setEnabled(True)
         self._embed_btn.setEnabled(bool(self._tasks))
         msg = f"Done. {done} file(s) updated."
@@ -2139,6 +2173,9 @@ class _YTMetadataFetchThread(QThread):
                 info = ydl.extract_info(self._url, download=False)
         except Exception as exc:
             self.error.emit(str(exc))
+            return
+
+        if self.isInterruptionRequested():
             return
 
         if not info:
@@ -2231,8 +2268,13 @@ class MetadataBrowserWidget(QWidget):
         self._apply_btn = QPushButton("Apply All")
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._apply_all)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setProperty("role", "secondary")
+        self._cancel_btn.hide()
+        self._cancel_btn.clicked.connect(self._cancel)
         bot.addWidget(self._status)
         bot.addStretch()
+        bot.addWidget(self._cancel_btn)
         bot.addWidget(self._apply_btn)
         lay.addLayout(bot)
 
@@ -2285,6 +2327,7 @@ class MetadataBrowserWidget(QWidget):
         self._fetch_btn.setEnabled(False)
         self._scan_btn.setEnabled(False)
         self._apply_btn.setEnabled(False)
+        self._cancel_btn.show()
         self._pairs.clear()
         self._list.clear()
         self._status.setText("Fetching metadata from YouTube Music…")
@@ -2364,11 +2407,21 @@ class MetadataBrowserWidget(QWidget):
             f"Matched {len(self._pairs)} of {len(self._files)} file(s) to '{album_title}'."
         )
 
+    def _cancel(self) -> None:
+        if self._thread and self._thread.isRunning():
+            self._thread.requestInterruption()
+            self._cancel_btn.setEnabled(False)
+            self._status.setText("Cancelling…")
+
     def _on_error(self, msg: str) -> None:
+        self._cancel_btn.hide()
+        self._cancel_btn.setEnabled(True)
         self._status.setText(f"Error: {msg}")
 
     def _on_fetch_done(self) -> None:
         self._progress.hide()
+        self._cancel_btn.hide()
+        self._cancel_btn.setEnabled(True)
         self._scan_btn.setEnabled(True)
         self._fetch_btn.setEnabled(True)
         self._apply_btn.setEnabled(bool(self._pairs))
