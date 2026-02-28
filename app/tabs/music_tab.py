@@ -1123,15 +1123,19 @@ class CollectionWidget(QWidget):
             else:
                 tpl = os.path.join(out_dir, f"{num:02d}. %(title)s.%(ext)s")
 
-            # Write '00. AlbumTitle.jpg' sidecar once per album folder
-            if use_sub and embed_thumb and self._playlist_thumb_url and not sidecar_written:
+            # Write '00. AlbumTitle.jpg' sidecar once per album folder.
+            # Prefer the playlist-level thumbnail; fall back to the first
+            # entry's thumbnail (covers single-track singles where YouTube
+            # Music may not expose a separate playlist thumbnail).
+            _sidecar_url = self._playlist_thumb_url or thumb
+            if use_sub and embed_thumb and _sidecar_url and not sidecar_written:
                 sidecar_written = True
                 folder = os.path.dirname(tpl.split("%(")[0])
                 safe   = _safe_folder(self._collection_title) or "Cover"
                 import threading as _t
                 _t.Thread(
                     target=_write_cover_sidecar,
-                    args=(folder, safe, self._playlist_thumb_url),
+                    args=(folder, safe, _sidecar_url),
                     daemon=True,
                 ).start()
 
