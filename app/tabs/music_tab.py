@@ -1036,11 +1036,15 @@ class CollectionWidget(QWidget):
         m = re.match(r'^(Album|Playlist|Artist|EP|Single|Mix)\s*[-–—]\s*', raw_title)
         self._collection_type  = m.group(1).lower() if m else self._mode   # "album","ep","single",…
         self._collection_title = raw_title[m.end():].strip() if m else raw_title
-        # Playlist-level thumbnail (square album art) for sidecar writing
-        thumbs = info.get("thumbnails") or []
-        self._playlist_thumb_url = (
-            thumbs[-1].get("url", "") if thumbs else info.get("thumbnail", "")
-        )
+        # Playlist-level thumbnail (square album art) for sidecar writing.
+        # Try thumbnails list (last = highest quality) then fall back to
+        # the singular "thumbnail" field — whichever is non-empty wins.
+        import sys as _sys
+        _best = next((t["url"] for t in reversed(info.get("thumbnails") or [])
+                      if t.get("url")), "")
+        self._playlist_thumb_url = _best or info.get("thumbnail", "")
+        print(f"[sidecar] _on_info thumb={self._playlist_thumb_url!r:.80s}",
+              file=_sys.stderr, flush=True)
         self._list.clear()
         for i, entry in enumerate(self._entries, 1):
             title  = entry.get("title") or entry.get("id", "Unknown")
@@ -1128,6 +1132,10 @@ class CollectionWidget(QWidget):
             # entry's thumbnail (covers single-track singles where YouTube
             # Music may not expose a separate playlist thumbnail).
             _sidecar_url = self._playlist_thumb_url or thumb
+            import sys as _sys
+            print(f"[sidecar] use_sub={use_sub} embed_thumb={embed_thumb} "
+                  f"url={_sidecar_url!r:.60s} written={sidecar_written}",
+                  file=_sys.stderr, flush=True)
             if use_sub and embed_thumb and _sidecar_url and not sidecar_written:
                 sidecar_written = True
                 folder = os.path.dirname(tpl.split("%(")[0])
