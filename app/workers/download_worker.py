@@ -158,9 +158,9 @@ class DownloadWorker(QThread):
                         try:
                             os.makedirs(os.path.dirname(dest), exist_ok=True)
                             _sh.copy2(thumb, dest)
-                            print(f"[sidecar] wrote {dest!r}", file=sys.stderr, flush=True)
+                            print(f"[sidecar] wrote {dest!r}", file=_sys.stderr, flush=True)
                         except Exception as exc:
-                            print(f"[sidecar] copy failed: {exc!r}", file=sys.stderr, flush=True)
+                            print(f"[sidecar] copy failed: {exc!r}", file=_sys.stderr, flush=True)
                 return
 
             if d.get("status") == "finished":
