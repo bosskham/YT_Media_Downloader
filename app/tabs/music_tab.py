@@ -1096,30 +1096,25 @@ class CollectionWidget(QWidget):
             else:
                 tpl = os.path.join(out_dir, f"{num:02d}. %(title)s.%(ext)s")
 
-            # For the first track, redirect the thumbnail output to
-            # '00. AlbumTitle.%(ext)s' so yt-dlp writes the sidecar itself
-            # using its own auth/cookies — no separate HTTP request needed.
-            if use_sub and embed_thumb and not sidecar_written:
-                sidecar_written = True
-                folder = os.path.dirname(tpl.split("%(")[0])
-                safe   = _safe_folder(self._collection_title) or "Cover"
-                outtmpl = {
-                    "default":   tpl,
-                    "thumbnail": os.path.join(folder, f"00. {safe}.%(ext)s"),
-                }
-            else:
-                outtmpl = tpl
-
             ydl_opts = {
                 "format":          "bestaudio/best",
                 "postprocessors":  _build_audio_postprocessors(codec, quality, embed_thumb),
                 "writethumbnail":  embed_thumb,
-                "outtmpl":         outtmpl,
+                "outtmpl":         tpl,
                 "noplaylist":      True,
                 "quiet":           True,
                 "no_warnings":     True,
                 "js_runtimes":     {"node": {}},
             }
+
+            # For the first track, tell the download worker to copy the
+            # thumbnail (post-crop, pre-EmbedThumbnail-delete) to a sidecar.
+            if use_sub and embed_thumb and not sidecar_written:
+                sidecar_written = True
+                folder = os.path.dirname(tpl.split("%(")[0])
+                safe   = _safe_folder(self._collection_title) or "Cover"
+                # Pass base path (no ext) — worker appends the actual extension
+                ydl_opts["_sidecar_dest"] = os.path.join(folder, f"00. {safe}")
 
             self._manager.add_download(
                 video_url, ydl_opts, {"title": title, "thumbnail": thumb}

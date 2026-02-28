@@ -150,6 +150,17 @@ class DownloadWorker(QThread):
                                   if t.get("filepath")), ""))
                 if thumb and os.path.isfile(thumb):
                     _crop_thumbnail_square(thumb)
+                    # Copy cropped thumbnail to sidecar before EmbedThumbnail deletes it
+                    if sidecar_dest:
+                        import shutil as _sh
+                        ext  = os.path.splitext(thumb)[1]
+                        dest = sidecar_dest + ext
+                        try:
+                            os.makedirs(os.path.dirname(dest), exist_ok=True)
+                            _sh.copy2(thumb, dest)
+                            print(f"[sidecar] wrote {dest!r}", file=sys.stderr, flush=True)
+                        except Exception as exc:
+                            print(f"[sidecar] copy failed: {exc!r}", file=sys.stderr, flush=True)
                 return
 
             if d.get("status") == "finished":
@@ -174,6 +185,7 @@ class DownloadWorker(QThread):
         # Pop private keys before passing to yt-dlp (not valid yt-dlp options)
         lyrics_callback = opts.pop("_lyrics_callback", None)
         target_codec    = opts.pop("_target_codec", None)
+        sidecar_dest    = opts.pop("_sidecar_dest", "")
 
         # Force UTF-8 output from yt-dlp (Windows defaults to cp1252 in compiled exe)
         opts.setdefault("encoding", "utf-8")
