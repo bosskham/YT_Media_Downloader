@@ -53,6 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "embed_thumbnail": True,
     "embed_metadata": True,
     "fetch_lyrics": True,
+    "whisper_model": "base",
     # Playlist
     "playlist_subfolder": True,
     # Authentication

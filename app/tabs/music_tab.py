@@ -36,6 +36,41 @@ def _safe_folder(name: str, max_len: int = 60) -> str:
     return re.sub(r'[\\/:*?"<>|]', "", name).strip()[:max_len]
 
 
+def _build_output_template(
+    out_dir: str,
+    num: int,
+    title: str,
+    artist: str,
+    collection_title: str,
+    collection_type: str,
+) -> str:
+    """
+    Build the yt-dlp outtmpl path based on collection type.
+
+    Album / EP  →  out_dir / Artist / AlbumTitle / 01. %(title)s.%(ext)s
+    Single      →  out_dir / Artist / Singles    / %(title)s.%(ext)s
+    Artist      →  out_dir / Artist / %(album)s  / %(title)s.%(ext)s
+    Playlist    →  out_dir / PlaylistName         / 01. %(title)s.%(ext)s
+    """
+    artist_f  = _safe_folder(artist)  or "Unknown Artist"
+    album_f   = _safe_folder(collection_title) or "Unknown Album"
+    ctype     = collection_type.lower()
+
+    if ctype in ("album", "ep"):
+        return os.path.join(out_dir, artist_f, album_f, f"{num:02d}. %(title)s.%(ext)s")
+
+    if ctype == "single":
+        return os.path.join(out_dir, artist_f, "Singles", "%(title)s.%(ext)s")
+
+    if ctype == "artist":
+        # Each track may belong to a different album — use yt-dlp's %(album)s field.
+        # Fall back to 'Unknown Album' if the field is empty.
+        return os.path.join(out_dir, artist_f, "%(album|Unknown Album)s", "%(title)s.%(ext)s")
+
+    # playlist (or any other type) — flat under the playlist name
+    return os.path.join(out_dir, album_f, f"{num:02d}. %(title)s.%(ext)s")
+
+
 def _make_nav_btn(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setProperty("role", "nav")
@@ -295,73 +330,67 @@ def _embed_cover(filepath: str, img_bytes: bytes) -> None:
         print(f"[ytmusic-art] embed error: {exc!r}", file=sys.stderr, flush=True)
 
 
-def _ytmusicapi_lyrics(url: str) -> str | None:
-    """
-    Fetch lyrics from YouTube Music's official lyrics API (LyricFind) via ytmusicapi.
-    Supports timed lyrics (→ LRC) when available, plain text otherwise.
-    No authentication required for public videos.
-    Returns LRC or plain-text string, or None on failure / no lyrics.
-    """
-    import sys, re as _re
-    try:
-        from ytmusicapi import YTMusic
-    except ImportError:
-        return None
+# ── ytmusicapi lyrics — commented out (ytmusicapi still used for artist tab + cover art) ──────
+# def _ytmusicapi_lyrics(url: str) -> str | None:
+#     import sys, re as _re
+#     try:
+#         from ytmusicapi import YTMusic
+#     except ImportError:
+#         return None
+#     _m = _re.search(r'(?:v=|youtu\.be/|/v/|/embed/)([A-Za-z0-9_-]{11})', url)
+#     if not _m:
+#         return None
+#     video_id = _m.group(1)
+#     try:
+#         yt = YTMusic()
+#         wp = yt.get_watch_playlist(videoId=video_id)
+#         browse_id = wp.get("lyrics") if wp else None
+#         if not browse_id:
+#             return None
+#         lyrics_data = yt.get_lyrics(browse_id, timestamps=True)
+#         if not lyrics_data:
+#             return None
+#         source         = lyrics_data.get("source", "")
+#         has_timestamps = lyrics_data.get("hasTimestamps", False)
+#         lyrics_content = lyrics_data.get("lyrics")
+#         if has_timestamps and isinstance(lyrics_content, list):
+#             lrc_lines: list[str] = []
+#             for line in lyrics_content:
+#                 if isinstance(line, dict):
+#                     start_ms = line.get("startMs", "0") or "0"
+#                     text     = (line.get("lyric") or line.get("text") or "").strip()
+#                 else:
+#                     start_ms = str(getattr(line, "startMs", None) or "0")
+#                     text     = (getattr(line, "text", None) or getattr(line, "lyric", None) or "").strip()
+#                 if not text:
+#                     continue
+#                 start_s = int(start_ms) / 1000
+#                 m_val, s_val = divmod(start_s, 60)
+#                 lrc_lines.append(f"[{int(m_val):02d}:{s_val:05.2f}]{text}")
+#             if lrc_lines:
+#                 return "\n".join(lrc_lines)
+#         if isinstance(lyrics_content, str) and lyrics_content.strip():
+#             return lyrics_content.strip()
+#         return None
+#     except Exception as exc:
+#         print(f"[ytmusic] error: {exc!r}", file=sys.stderr, flush=True)
+#         return None
 
-    # Extract video ID from any YouTube / YouTube Music URL
-    _m = _re.search(r'(?:v=|youtu\.be/|/v/|/embed/)([A-Za-z0-9_-]{11})', url)
-    if not _m:
-        return None
-    video_id = _m.group(1)
 
-    print(f"[ytmusic] fetching lyrics  videoId={video_id!r}", file=sys.stderr, flush=True)
-    try:
-        yt = YTMusic()
-        wp = yt.get_watch_playlist(videoId=video_id)
-        browse_id = wp.get("lyrics") if wp else None
-        if not browse_id:
-            print("[ytmusic] no lyrics browseId in watch playlist", file=sys.stderr, flush=True)
-            return None
-
-        lyrics_data = yt.get_lyrics(browse_id, timestamps=True)
-        if not lyrics_data:
-            return None
-
-        source          = lyrics_data.get("source", "")
-        has_timestamps  = lyrics_data.get("hasTimestamps", False)
-        lyrics_content  = lyrics_data.get("lyrics")
-
-        if has_timestamps and isinstance(lyrics_content, list):
-            # TimedLyrics → LRC format
-            # ytmusicapi ≥ 1.8 returns LyricLine objects; older versions return dicts.
-            lrc_lines: list[str] = []
-            for line in lyrics_content:
-                if isinstance(line, dict):
-                    start_ms = line.get("startMs", "0") or "0"
-                    text     = (line.get("lyric") or line.get("text") or "").strip()
-                else:
-                    start_ms = str(getattr(line, "startMs", None) or "0")
-                    text     = (getattr(line, "text", None) or getattr(line, "lyric", None) or "").strip()
-                if not text:
-                    continue
-                start_s = int(start_ms) / 1000
-                m_val   = int(start_s // 60)
-                s_val   = start_s % 60
-                lrc_lines.append(f"[{m_val:02d}:{s_val:05.2f}]{text}")
-            if lrc_lines:
-                print(f"[ytmusic] timed lyrics: {len(lrc_lines)} lines  source={source!r}",
-                      file=sys.stderr, flush=True)
-                return "\n".join(lrc_lines)
-
-        if isinstance(lyrics_content, str) and lyrics_content.strip():
-            print(f"[ytmusic] plain lyrics: {len(lyrics_content)} chars  source={source!r}",
-                  file=sys.stderr, flush=True)
-            return lyrics_content.strip()
-
-        return None
-    except Exception as exc:
-        print(f"[ytmusic] error: {exc!r}", file=sys.stderr, flush=True)
-        return None
+# ── syncedlyrics — commented out (not installed) ──────────────────────────────
+# def _syncedlyrics_search(title: str, artist: str) -> str | None:
+#     import sys
+#     try:
+#         import syncedlyrics
+#     except ImportError:
+#         return None
+#     query = f"{title} {artist}".strip()
+#     try:
+#         lrc = syncedlyrics.search(query)
+#         return lrc or None
+#     except Exception as exc:
+#         print(f"[lyrics] syncedlyrics error: {exc!r}", file=sys.stderr, flush=True)
+#         return None
 
 
 def _detect_script(text: str) -> str:
@@ -383,7 +412,7 @@ def _detect_script(text: str) -> str:
 
 
 def _romanize_line(text: str, script: str) -> str | None:
-    """Romanize one line of text; return None if unavailable or identical to input."""
+    """Romanize one line; return None if unavailable or identical to input."""
     if script == "ja":
         try:
             import pykakasi
@@ -411,9 +440,8 @@ def _romanize_line(text: str, script: str) -> str | None:
 
 def _romanize_lyrics(lrc: str) -> str:
     """
-    Walk each line of an LRC or plain-text lyrics string.
-    For non-Latin lines, append ' ♪ <romanized>' on the same line.
-    LRC timestamps ([mm:ss.xx]) are stripped for script detection but preserved in output.
+    Walk each LRC / plain-text line. For non-Latin lines append ' ♪ <romanized>'.
+    LRC timestamps are stripped for detection but preserved in output.
     """
     out: list[str] = []
     for line in lrc.splitlines():
@@ -427,28 +455,99 @@ def _romanize_lyrics(lrc: str) -> str:
     return "\n".join(out)
 
 
-def _syncedlyrics_search(title: str, artist: str) -> str | None:
+# ── faster-whisper transcription (Tier 1 fallback when YouTube has no subtitles) ─────────────
+
+import threading as _threading
+
+_whisper_model_lock  = _threading.Lock()
+_whisper_model_cache: dict[str, object] = {}   # model_name → WhisperModel instance
+
+
+def _is_whisper_model_cached(model_name: str) -> bool:
+    """Return True if the model files are already on disk (no download needed)."""
+    try:
+        from faster_whisper.utils import get_assets_path
+        import huggingface_hub
+        cache = huggingface_hub.constants.HF_HUB_CACHE
+        repo   = f"Systran/faster-whisper-{model_name}"
+        model_dir = os.path.join(cache, "models--" + repo.replace("/", "--"))
+        return os.path.isdir(model_dir)
+    except Exception:
+        return False
+
+
+def _transcribe_with_whisper(filepath: str, model_name: str) -> str | None:
     """
-    Search for synced (or plain) lyrics via the syncedlyrics library.
-    Tries multiple providers (NetEase, Musixmatch, Lyricsify, Genius, …) without auth.
-    Returns LRC string or None.
+    Transcribe audio with faster-whisper and return an LRC string, or None on failure.
+    The model is cached in _whisper_model_cache after first load.
     """
     import sys
     try:
-        import syncedlyrics
+        from faster_whisper import WhisperModel
     except ImportError:
-        print("[lyrics] syncedlyrics not installed — skipping", file=sys.stderr, flush=True)
+        print("[whisper] faster-whisper not installed — skipping", file=sys.stderr, flush=True)
         return None
-    query = f"{title} {artist}".strip()
-    print(f"[lyrics] syncedlyrics: {query!r}", file=sys.stderr, flush=True)
+
+    print(f"[whisper] transcribing {os.path.basename(filepath)!r} model={model_name!r}",
+          file=sys.stderr, flush=True)
     try:
-        lrc = syncedlyrics.search(query)
-        if lrc:
-            print(f"[lyrics] syncedlyrics: {len(lrc)} chars", file=sys.stderr, flush=True)
-        return lrc or None
+        with _whisper_model_lock:
+            if model_name not in _whisper_model_cache:
+                print(f"[whisper] loading model {model_name!r}…", file=sys.stderr, flush=True)
+                _whisper_model_cache[model_name] = WhisperModel(
+                    model_name, device="cpu", compute_type="int8"
+                )
+            model = _whisper_model_cache[model_name]
+
+        segments, info = model.transcribe(filepath, beam_size=5, word_timestamps=False)
+        lrc_lines: list[str] = []
+        for seg in segments:
+            m_val = int(seg.start // 60)
+            s_val = seg.start % 60
+            text  = seg.text.strip()
+            if text:
+                lrc_lines.append(f"[{m_val:02d}:{s_val:05.2f}]{text}")
+
+        if not lrc_lines:
+            print("[whisper] transcription produced no segments", file=sys.stderr, flush=True)
+            return None
+
+        print(f"[whisper] {len(lrc_lines)} segments  lang={info.language!r}",
+              file=sys.stderr, flush=True)
+        return "\n".join(lrc_lines)
     except Exception as exc:
-        print(f"[lyrics] syncedlyrics error: {exc!r}", file=sys.stderr, flush=True)
+        print(f"[whisper] transcription error: {exc!r}", file=sys.stderr, flush=True)
         return None
+
+
+def _whisper_model_setting() -> str:
+    """Read the whisper model name from Settings (defaults to 'base')."""
+    try:
+        from ..settings import get_settings
+        return get_settings().get("whisper_model", "base")
+    except Exception:
+        return "base"
+
+
+def _read_tags_from_file(filepath: str) -> tuple[str, str]:
+    """Read (title, artist) from embedded audio metadata. Returns ('', '') on failure."""
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".mp3":
+            from mutagen.id3 import ID3
+            tags   = ID3(filepath)
+            return str(tags.get("TIT2") or ""), str(tags.get("TPE1") or "")
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            tags   = FLAC(filepath)
+            return (tags.get("title") or [""])[0], (tags.get("artist") or [""])[0]
+        if ext in (".m4a", ".aac", ".mp4"):
+            from mutagen.mp4 import MP4
+            tags   = MP4(filepath)
+            return (tags.get("\xa9nam") or [""])[0], (tags.get("\xa9ART") or [""])[0]
+    except Exception:
+        pass
+    return "", ""
 
 
 def _fetch_and_embed_lyrics(
@@ -461,17 +560,27 @@ def _fetch_and_embed_lyrics(
 ) -> None:
     """
     Post-download callback: fetch & embed cover art + lyrics.
-    Cover art: iTunes API (square) overwrites yt-dlp's 16:9 video thumbnail.
-    Lyrics:    YouTube VTT → ytmusicapi LyricFind → syncedlyrics (multi-provider).
-    Non-Latin lyrics are romanized (original ♪ romanized per line).
-    fetch_lyrics=False skips all lyrics tiers (cover-art-only mode).
+    Cover art : iTunes Search API (square 1200×1200) overwrites yt-dlp's 16:9 thumbnail.
+    Lyrics    : Tier 0 — YouTube VTT subtitles
+                Tier 1 — faster-whisper transcription (fallback)
+    Romanize  : pykakasi (Japanese → hepburn romaji) appended per line.
+    fetch_lyrics=False → cover-art-only mode.
+    title/artist empty → read from embedded tags (playlist/album downloads).
     """
     import sys
+
+    # For playlist/album downloads title & artist aren't known at queue time —
+    # read them from the metadata that yt-dlp already embedded.
+    if not title or not artist:
+        _t, _a = _read_tags_from_file(filepath)
+        title  = title  or _t
+        artist = artist or _a
+
     print(f"[post-dl] filepath={filepath!r}", file=sys.stderr, flush=True)
     print(f"[post-dl] title={title!r}  artist={artist!r}  embed_cover={embed_cover}  fetch_lyrics={fetch_lyrics}",
           file=sys.stderr, flush=True)
 
-    # Cover art: fetch original square album art and overwrite yt-dlp's 16:9 thumbnail.
+    # Cover art: iTunes Search API → ytmusicapi search → ytmusicapi watch_playlist
     if embed_cover:
         cover = _fetch_album_art(url, title, artist)
         if cover:
@@ -480,24 +589,21 @@ def _fetch_and_embed_lyrics(
     if not fetch_lyrics:
         return
 
-    # Tier 0: YouTube subtitle / caption tracks (official lyrics or Google ASR)
+    # Tier 0: YouTube VTT subtitles / caption tracks
     lrc: str | None = _youtube_lyrics(url) if url else None
 
-    # Tier 1: YouTube Music official lyrics via ytmusicapi (LyricFind — timed when available)
-    if not lrc and url:
-        lrc = _ytmusicapi_lyrics(url)
+    # Tier 1: faster-whisper transcription (when YouTube has no subtitles)
+    if not lrc:
+        whisper_model = _whisper_model_setting()
+        lrc = _transcribe_with_whisper(filepath, whisper_model)
 
-    # Tier 2: syncedlyrics (NetEase, Musixmatch, Lyricsify, Genius, …)
-    if not lrc and title:
-        lrc = _syncedlyrics_search(title, artist)
-
-    # Romanize non-Latin lyrics (original ♪ romanized per line)
+    # Romanize Japanese lyrics (original ♪ romaji per line)
     if lrc:
         lrc = _romanize_lyrics(lrc)
-        print(f"[lyrics] found {len(lrc)} chars — embedding…", file=sys.stderr, flush=True)
+        print(f"[lyrics] {len(lrc)} chars — embedding…", file=sys.stderr, flush=True)
         _embed_lyrics(filepath, lrc, title, artist)
     else:
-        print("[lyrics] no lyrics found anywhere", file=sys.stderr, flush=True)
+        print("[lyrics] no lyrics found", file=sys.stderr, flush=True)
 
 
 def _embed_lyrics(filepath: str, lyrics: str, title: str, artist: str) -> None:
@@ -769,6 +875,7 @@ class CollectionWidget(QWidget):
         self._mode     = mode
         self._entries: list[dict] = []
         self._collection_title: str = ""
+        self._collection_type:  str = mode   # overwritten by _on_info
         self._info_worker: Optional[InfoWorker] = None
         self._build_ui()
 
@@ -906,7 +1013,12 @@ class CollectionWidget(QWidget):
         if not entries and info.get("_type") == "video":
             entries = [info]
         self._entries = [e for e in entries if e]
-        self._collection_title = info.get("title", "")
+        # Strip YouTube Music playlist-type prefix: "Album - Title", "Playlist - Title", etc.
+        # Capture the prefix so _download_selected can pick the right folder structure.
+        raw_title = info.get("title", "")
+        m = re.match(r'^(Album|Playlist|Artist|EP|Single|Mix)\s*[-–—]\s*', raw_title)
+        self._collection_type  = m.group(1).lower() if m else self._mode   # "album","ep","single",…
+        self._collection_title = raw_title[m.end():].strip() if m else raw_title
         self._list.clear()
         for i, entry in enumerate(self._entries, 1):
             title  = entry.get("title") or entry.get("id", "Unknown")
@@ -982,8 +1094,10 @@ class CollectionWidget(QWidget):
             thumb  = entry.get("thumbnail", "")
 
             if use_sub:
-                sub = _safe_folder(self._collection_title) or "music"
-                tpl = os.path.join(out_dir, sub, f"{num:02d}. %(title)s.%(ext)s")
+                tpl = _build_output_template(
+                    out_dir, num, title, artist,
+                    self._collection_title, self._collection_type,
+                )
             else:
                 tpl = os.path.join(out_dir, f"{num:02d}. %(title)s.%(ext)s")
 
@@ -1012,6 +1126,560 @@ class CollectionWidget(QWidget):
 
             self._manager.add_download(
                 video_url, ydl_opts, {"title": title, "thumbnail": thumb}
+            )
+
+
+# ── Whisper model download dialog ────────────────────────────────────────────
+
+class _WhisperDownloadThread(QThread):
+    """Downloads a faster-whisper model from HuggingFace in a background thread."""
+    progress = Signal(str)
+    finished_ok = Signal()
+    error = Signal(str)
+
+    def __init__(self, model_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self._model = model_name
+
+    def run(self) -> None:
+        try:
+            from faster_whisper import WhisperModel
+            self.progress.emit(f"Downloading faster-whisper model '{self._model}'…")
+            WhisperModel(self._model, device="cpu", compute_type="int8")
+            self.finished_ok.emit()
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class _WhisperModelDialog(QDialog):
+    """
+    Shown when the selected faster-whisper model is not cached locally.
+    Offers to download it or cancel (in which case transcription is skipped).
+    """
+    def __init__(self, model_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Whisper Model Required")
+        self.setMinimumWidth(420)
+        self._model  = model_name
+        self._thread: _WhisperDownloadThread | None = None
+        self._ok     = False
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+
+        self._lbl = QLabel(
+            f"The faster-whisper model <b>{model_name}</b> is not cached locally.\n"
+            "Download it now? (Required for lyrics transcription.)"
+        )
+        self._lbl.setWordWrap(True)
+        lay.addWidget(self._lbl)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 0)   # indeterminate
+        self._bar.setVisible(False)
+        lay.addWidget(self._bar)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok_btn.setText("Download")
+        btns.accepted.connect(self._start_download)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _start_download(self) -> None:
+        self._ok_btn.setEnabled(False)
+        self._bar.setVisible(True)
+        self._lbl.setText(f"Downloading '{self._model}'…")
+        self._thread = _WhisperDownloadThread(self._model, self)
+        self._thread.finished_ok.connect(self._on_done)
+        self._thread.error.connect(self._on_error)
+        self._thread.start()
+
+    def _on_done(self) -> None:
+        self._ok = True
+        self.accept()
+
+    def _on_error(self, msg: str) -> None:
+        self._lbl.setText(f"Download failed:\n{msg}")
+        self._bar.setVisible(False)
+        self._ok_btn.setEnabled(True)
+
+    def model_ready(self) -> bool:
+        return self._ok
+
+
+def _check_whisper_model(model_name: str, parent=None) -> bool:
+    """
+    Ensure the whisper model is on disk. Shows a download dialog if not.
+    Returns True if the model is ready, False if user cancelled or download failed.
+    """
+    if _is_whisper_model_cached(model_name):
+        return True
+    dlg = _WhisperModelDialog(model_name, parent)
+    dlg.exec()
+    return dlg.model_ready()
+
+
+# ── Artist discography fetch thread ──────────────────────────────────────────
+
+class _ArtistFetchThread(QThread):
+    """Fetch an artist's full discography (Albums + EPs + Singles) via ytmusicapi."""
+    result_ready = Signal(dict)   # {"artist_name": str, "releases": list[dict]}
+    error        = Signal(str)
+
+    def __init__(self, channel_url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._url = channel_url
+
+    def run(self) -> None:
+        import sys, re as _re
+        import yt_dlp
+
+        # Extract UC… channel ID.  Only the /channel/UC… URL format is reliable.
+        # The /browse/MPADU… format embeds a different internal ID and is not
+        # guaranteed to work — guide users to use the /channel/ URL instead.
+        m = _re.search(r'(UC[A-Za-z0-9_-]{22})', self._url)
+        if not m:
+            self.error.emit(
+                f"Could not find a channel ID in:\n{self._url}\n\n"
+                "Use the artist channel URL in this format:\n"
+                "  https://music.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxxxxx\n\n"
+                "On YouTube Music: open the artist page → click the channel name "
+                "→ copy the URL from your browser's address bar."
+            )
+            return
+        channel_id = m.group(1)
+        print(f"[artist] fetching discography  channelId={channel_id!r}",
+              file=sys.stderr, flush=True)
+
+        # ── Stage 1: ytmusicapi ───────────────────────────────────────────────
+        # Always try ytmusicapi first — it gives artist name and Album/EP/Single
+        # type labels that yt-dlp cannot provide.  get_artist() itself is reliable;
+        # only get_artist_albums() is broken in ytmusicapi 1.11.x (parser bug).
+        artist_name  = ""
+        type_hints:  dict[str, str] = {}   # lower(title) → "album"|"ep"|"single"
+        ytm_releases: list[dict]    = []
+        need_full_list = False             # True when get_artist_albums() failed
+
+        try:
+            from ytmusicapi import YTMusic
+            ytm  = YTMusic()
+            data = ytm.get_artist(channel_id)
+            artist_name = data.get("name", "")
+
+            def _thumb_yt(thumbs) -> str:
+                return (thumbs or [{}])[-1].get("url", "")
+
+            def _release_yt(item: dict, default_type: str) -> dict | None:
+                pl = item.get("audioPlaylistId") or item.get("playlistId", "")
+                if not pl:
+                    return None
+                title = item.get("title", "Unknown")
+                rtype = item.get("type", default_type).lower()
+                type_hints[title.lower()] = rtype
+                return {
+                    "title":        title,
+                    "type":         rtype,
+                    "year":         item.get("year", ""),
+                    "playlist_url": f"https://music.youtube.com/playlist?list={pl}",
+                    "artist":       artist_name,
+                    "thumbnail":    _thumb_yt(item.get("thumbnails")),
+                }
+
+            def _fetch_section(section_key: str, default_type: str) -> tuple[list[dict], bool]:
+                """Returns (releases, got_full_list)."""
+                section = data.get(section_key) or {}
+                params  = section.get("params")
+                if params:
+                    try:
+                        items = ytm.get_artist_albums(channel_id, params)
+                        print(f"[artist] ytmusicapi {section_key}: {len(items)} (full)",
+                              file=sys.stderr, flush=True)
+                        return [r for item in items
+                                if (r := _release_yt(item, default_type))], True
+                    except Exception as exc:
+                        print(f"[artist] get_artist_albums({section_key}) failed: {exc!r}",
+                              file=sys.stderr, flush=True)
+                        # Fall through — use the preview results as type-hint seed
+                else:
+                    # No params → preview IS the complete list (artist has few releases)
+                    items = section.get("results", [])
+                    return [r for item in items
+                            if (r := _release_yt(item, default_type))], True
+
+                # get_artist_albums failed: harvest the preview as type hints only
+                for item in section.get("results", []):
+                    t = item.get("title", "")
+                    if t:
+                        type_hints[t.lower()] = item.get("type", default_type).lower()
+                return [], False
+
+            alb, alb_full = _fetch_section("albums",  "Album")
+            sng, sng_full = _fetch_section("singles", "Single")
+            ytm_releases  = alb + sng
+            need_full_list = not (alb_full and sng_full)
+
+        except ImportError:
+            print("[artist] ytmusicapi not installed — falling back to yt-dlp only",
+                  file=sys.stderr, flush=True)
+            need_full_list = True
+        except Exception as exc:
+            print(f"[artist] ytmusicapi error: {exc!r}", file=sys.stderr, flush=True)
+            need_full_list = True
+
+        # ── Stage 2: yt-dlp fallback (full list) ─────────────────────────────
+        # ytmusicapi's get_artist_albums() parser is broken in v1.11.x, so we
+        # fall back to yt-dlp to enumerate all release playlists.
+        #
+        # Strategy (try in order until one succeeds):
+        #   A. /releases tab  — exists on most artist channels
+        #   B. /playlists tab — always exists; filter to OLAK5uy_ IDs which are
+        #      YouTube Music's official album/EP/single release playlists
+        #
+        # Type info comes from the ytmusicapi seed (type_hints) collected above.
+        yt_releases: list[dict] = []
+
+        def _parse_entries(info: dict) -> list[dict]:
+            """Convert yt-dlp flat-extract entries into release dicts."""
+            result = []
+            ch = (info.get("channel") or info.get("uploader") or "")
+            nonlocal artist_name
+            if not artist_name and ch:
+                artist_name = ch
+            for entry in (info.get("entries") or []):
+                if not entry:
+                    continue
+                title = entry.get("title") or "Unknown"
+                pl_id = entry.get("id") or ""
+                if not pl_id:
+                    continue
+                thumbs = entry.get("thumbnails") or []
+                thumb  = thumbs[-1].get("url", "") if thumbs else ""
+                year   = str(entry.get("release_year") or entry.get("year") or "")
+                rtype  = type_hints.get(title.lower(), "album")
+                result.append({
+                    "title":        title,
+                    "type":         rtype,
+                    "year":         year,
+                    "playlist_url": f"https://www.youtube.com/playlist?list={pl_id}",
+                    "artist":       artist_name,
+                    "thumbnail":    thumb,
+                })
+            return result
+
+        if need_full_list:
+            ydl_opts = {
+                "extract_flat": "in_playlist",
+                "quiet":        True,
+                "no_warnings":  True,
+            }
+
+            # ── A: /releases tab ─────────────────────────────────────────────
+            releases_url = f"https://www.youtube.com/channel/{channel_id}/releases"
+            print(f"[artist] yt-dlp try /releases: {releases_url}",
+                  file=sys.stderr, flush=True)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(releases_url, download=False)
+                yt_releases = _parse_entries(info or {})
+                print(f"[artist] /releases tab: {len(yt_releases)} entries",
+                      file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[artist] /releases tab error: {exc!r}", file=sys.stderr, flush=True)
+
+            # ── B: /playlists tab (filter to OLAK5uy_ official release IDs) ─
+            if not yt_releases:
+                playlists_url = f"https://www.youtube.com/channel/{channel_id}/playlists"
+                print(f"[artist] yt-dlp try /playlists: {playlists_url}",
+                      file=sys.stderr, flush=True)
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(playlists_url, download=False)
+                    all_pl = _parse_entries(info or {})
+                    # OLAK5uy_ prefix = YouTube Music official release playlists
+                    # (albums, EPs, singles) — filter out fan/topic playlists
+                    yt_releases = [
+                        r for r in all_pl
+                        if r["playlist_url"].split("list=")[-1].startswith("OLAK5uy_")
+                    ]
+                    print(
+                        f"[artist] /playlists tab: {len(all_pl)} total, "
+                        f"{len(yt_releases)} OLAK5uy_ releases",
+                        file=sys.stderr, flush=True,
+                    )
+                except Exception as exc:
+                    print(f"[artist] /playlists tab error: {exc!r}",
+                          file=sys.stderr, flush=True)
+
+        # ── Merge results ─────────────────────────────────────────────────────
+        # Prefer yt-dlp list (complete) when it found more than ytmusicapi did.
+        if len(yt_releases) > len(ytm_releases):
+            releases = yt_releases
+            print(f"[artist] using yt-dlp list ({len(yt_releases)} releases)",
+                  file=sys.stderr, flush=True)
+        else:
+            releases = ytm_releases
+            print(f"[artist] using ytmusicapi list ({len(ytm_releases)} releases)",
+                  file=sys.stderr, flush=True)
+
+        if not releases:
+            self.error.emit(
+                f"No releases found for channel {channel_id}.\n\n"
+                "Make sure the URL is a valid YouTube Music artist channel."
+            )
+            return
+
+        print(f"[artist] {len(releases)} releases for {artist_name!r}",
+              file=sys.stderr, flush=True)
+        self.result_ready.emit({"artist_name": artist_name, "releases": releases})
+
+
+# ── Artist widget ─────────────────────────────────────────────────────────────
+
+class ArtistWidget(QWidget):
+    """
+    Artist tab: fetches a YouTube Music artist's discography via ytmusicapi and
+    presents Albums / EPs / Singles as checkable items.
+
+    Each selected release is downloaded as a full playlist with proper structure:
+        out_dir / ArtistName / AlbumTitle  / 01. track.mp3   (Album / EP)
+        out_dir / ArtistName / Singles     / track.mp3        (Single)
+    """
+
+    def __init__(self, manager: DownloadManager, settings: Settings, parent=None) -> None:
+        super().__init__(parent)
+        self._manager       = manager
+        self._settings      = settings
+        self._releases: list[dict] = []
+        self._artist_name:  str = ""
+        self._fetch_thread: Optional[_ArtistFetchThread] = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 12, 0, 0)
+        root.setSpacing(10)
+
+        url_row = QHBoxLayout()
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText(
+            "https://music.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxxxxx"
+        )
+        self._fetch_btn = QPushButton("Fetch discography")
+        self._fetch_btn.setProperty("role", "secondary")
+        self._fetch_btn.clicked.connect(self._fetch)
+        url_row.addWidget(self._url_edit)
+        url_row.addWidget(self._fetch_btn)
+        root.addLayout(url_row)
+
+        self._status_lbl = QLabel(
+            "Paste a music.youtube.com/channel/UC… URL and click 'Fetch discography'."
+        )
+        self._status_lbl.setProperty("role", "muted")
+        root.addWidget(self._status_lbl)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+
+        # ── Left: controls ────────────────────────────────
+        left = QVBoxLayout()
+        left.setSpacing(10)
+
+        sel_row = QHBoxLayout()
+        sel_all  = QPushButton("Select all")
+        sel_none = QPushButton("Select none")
+        for btn in (sel_all, sel_none):
+            btn.setProperty("role", "secondary")
+            btn.setFixedHeight(28)
+            sel_row.addWidget(btn)
+        sel_all.clicked.connect(self._select_all)
+        sel_none.clicked.connect(self._select_none)
+        sel_row.addStretch()
+        self._sel_lbl = QLabel("")
+        self._sel_lbl.setProperty("role", "muted")
+        sel_row.addWidget(self._sel_lbl)
+        left.addLayout(sel_row)
+
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("Format:"))
+        self._fmt_combo = QComboBox()
+        self._fmt_combo.addItems(AUDIO_FORMATS)
+        idx = self._fmt_combo.findText(self._settings.get("audio_format", "mp3"))
+        self._fmt_combo.setCurrentIndex(max(0, idx))
+        fmt_row.addWidget(self._fmt_combo)
+        fmt_row.addWidget(QLabel("Quality:"))
+        self._q_combo = QComboBox()
+        self._q_combo.addItems([f"{q} kbps" for q in AUDIO_QUALITIES])
+        idx = self._q_combo.findText(f"{self._settings.get('audio_quality', '320')} kbps")
+        self._q_combo.setCurrentIndex(max(0, idx))
+        fmt_row.addWidget(self._q_combo)
+        fmt_row.addStretch()
+        left.addLayout(fmt_row)
+
+        chk_row = QHBoxLayout()
+        self._thumb_chk  = QCheckBox("Embed thumbnail")
+        self._meta_chk   = QCheckBox("Embed metadata")
+        self._lyrics_chk = QCheckBox("Fetch lyrics")
+        self._thumb_chk.setChecked(self._settings.get("embed_thumbnail", True))
+        self._meta_chk.setChecked(self._settings.get("embed_metadata", True))
+        self._lyrics_chk.setChecked(self._settings.get("fetch_lyrics", True))
+        chk_row.addWidget(self._thumb_chk)
+        chk_row.addWidget(self._meta_chk)
+        chk_row.addWidget(self._lyrics_chk)
+        chk_row.addStretch()
+        left.addLayout(chk_row)
+
+        out_row = QHBoxLayout()
+        self._out_edit = QLineEdit(self._settings.get("output_dir", ""))
+        self._out_edit.setPlaceholderText("Output directory…")
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setProperty("role", "secondary")
+        browse_btn.setMinimumWidth(90)
+        browse_btn.clicked.connect(self._browse)
+        out_row.addWidget(self._out_edit)
+        out_row.addWidget(browse_btn)
+        left.addLayout(out_row)
+
+        left.addStretch()
+        self._dl_btn = QPushButton("⬇  Download selected")
+        self._dl_btn.setFixedHeight(42)
+        self._dl_btn.clicked.connect(self._download_selected)
+        left.addWidget(self._dl_btn)
+
+        body.addLayout(left, 2)
+
+        # ── Right: release list ───────────────────────────
+        self._list = QListWidget()
+        self._list.itemChanged.connect(self._update_count)
+        body.addWidget(self._list, 3)
+
+        root.addLayout(body)
+
+    def _fetch(self) -> None:
+        url = self._url_edit.text().strip()
+        if not url:
+            return
+        self._list.clear()
+        self._releases = []
+        self._fetch_btn.setEnabled(False)
+        self._fetch_btn.setText("Fetching…")
+        self._status_lbl.setText("Fetching discography…")
+        thread = _ArtistFetchThread(url)
+        thread.result_ready.connect(self._on_result)
+        thread.error.connect(self._on_error)
+        thread.finished.connect(lambda: (
+            self._fetch_btn.setEnabled(True),
+            self._fetch_btn.setText("Fetch discography"),
+        ))
+        self._fetch_thread = thread
+        thread.start()
+
+    def _on_result(self, data: dict) -> None:
+        self._artist_name = data["artist_name"]
+        self._releases    = data["releases"]
+        self._list.clear()
+        for rel in self._releases:
+            rtype = {"album": "Album", "ep": "EP", "single": "Single"}.get(
+                rel["type"], rel["type"].capitalize()
+            )
+            year  = f"  ({rel['year']})" if rel["year"] else ""
+            item  = QListWidgetItem(f"[{rtype}]  {rel['title']}{year}")
+            item.setCheckState(Qt.CheckState.Checked)
+            self._list.addItem(item)
+        n = len(self._releases)
+        self._status_lbl.setText(
+            f"Found {n} release{'s' if n != 1 else ''} for {self._artist_name}"
+        )
+        self._update_count()
+
+    def _on_error(self, msg: str) -> None:
+        self._status_lbl.setText(f"Error: {msg}")
+
+    def _select_all(self) -> None:
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def _select_none(self) -> None:
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _update_count(self) -> None:
+        total   = self._list.count()
+        checked = sum(
+            1 for i in range(total)
+            if self._list.item(i).checkState() == Qt.CheckState.Checked
+        )
+        self._sel_lbl.setText(f"{checked} / {total} selected")
+
+    def _browse(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Output directory", self._out_edit.text() or str(Path.home())
+        )
+        if path:
+            self._out_edit.setText(path)
+
+    def _download_selected(self) -> None:
+        selected_idx = [
+            i for i in range(self._list.count())
+            if self._list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        if not selected_idx:
+            QMessageBox.warning(self, "Nothing selected", "Select at least one release.")
+            return
+
+        codec       = self._fmt_combo.currentText()
+        quality     = self._q_combo.currentText().split()[0]
+        embed_thumb = self._thumb_chk.isChecked()
+        fetch_lyr   = self._lyrics_chk.isChecked()
+        out_dir     = self._out_edit.text().strip() or self._settings.get("output_dir")
+        os.makedirs(out_dir, exist_ok=True)
+
+        for idx in selected_idx:
+            rel      = self._releases[idx]
+            rtype    = rel["type"].lower()   # "album" | "ep" | "single"
+            pl_url   = rel["playlist_url"]
+            thumb    = rel["thumbnail"]
+            artist_f = _safe_folder(self._artist_name) or "Unknown Artist"
+            title_f  = _safe_folder(rel["title"])       or "Unknown"
+
+            # Folder structure based on release type
+            if rtype == "single":
+                tpl = os.path.join(
+                    out_dir, artist_f, "Singles", "%(title)s.%(ext)s"
+                )
+            else:
+                # Album / EP — numbered tracks using yt-dlp's playlist_index
+                tpl = os.path.join(
+                    out_dir, artist_f, title_f,
+                    "%(playlist_index)02d. %(title)s.%(ext)s"
+                )
+
+            ydl_opts = {
+                "format":         "bestaudio/best",
+                "postprocessors": _build_audio_postprocessors(codec, quality, embed_thumb),
+                "writethumbnail": embed_thumb,
+                "outtmpl":        tpl,
+                "noplaylist":     False,   # download the whole release playlist
+                "quiet":          True,
+                "no_warnings":    True,
+                "js_runtimes":    {"node": {}},
+            }
+
+            # Title/artist not known per-track at queue time;
+            # _fetch_and_embed_lyrics will read them from embedded metadata.
+            if fetch_lyr or embed_thumb:
+                _c, _fl = embed_thumb, fetch_lyr
+                ydl_opts["_lyrics_callback"] = (
+                    lambda fp, c=_c, fl=_fl:
+                    _fetch_and_embed_lyrics(fp, "", "", "", embed_cover=c, fetch_lyrics=fl)
+                )
+                ydl_opts["_target_codec"] = codec
+
+            self._manager.add_download(
+                pl_url, ydl_opts,
+                {"title": f"{self._artist_name} — {rel['title']}", "thumbnail": thumb},
             )
 
 
@@ -1059,7 +1727,7 @@ class MusicTab(QWidget):
         # Stacked sub-tabs
         self._stack = QStackedWidget()
         self._stack.addWidget(SingleTrackWidget(self._manager, self._settings))
-        self._stack.addWidget(CollectionWidget(self._manager, self._settings, mode="artist"))
+        self._stack.addWidget(ArtistWidget(self._manager, self._settings))
         self._stack.addWidget(CollectionWidget(self._manager, self._settings, mode="album"))
         self._stack.addWidget(CollectionWidget(self._manager, self._settings, mode="playlist"))
 

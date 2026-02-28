@@ -121,17 +121,28 @@ try:
 except ImportError:
     print("[INFO] ytmusicapi not installed — YouTube Music official lyrics will not be bundled.")
 
-# ── Optional: lyrics + romanization libs ─────────────────────────────────────
-# Each block is conditional: only added when the package is actually installed
-# in the build venv.  Missing packages are skipped gracefully.
+# ── Optional: lyrics transcription + romanization ─────────────────────────────
 
+# faster-whisper (Tier 1 lyrics fallback — transcribes audio when YT has no subtitles)
 try:
-    import syncedlyrics  # noqa: F401
-    _hidden += ["syncedlyrics"]
-    print("[INFO] syncedlyrics found — will be bundled.")
+    import faster_whisper  # noqa: F401
+    import ctranslate2     # noqa: F401
+    import huggingface_hub # noqa: F401
+    import tokenizers      # noqa: F401
+    _hidden += [
+        "faster_whisper",
+        "ctranslate2",
+        "huggingface_hub",
+        "huggingface_hub.constants",
+        "tokenizers",
+        "tqdm",
+        "tqdm.auto",
+    ]
+    print("[INFO] faster-whisper found — will be bundled.")
 except ImportError:
-    print("[INFO] syncedlyrics not installed — multi-provider lyrics will not be bundled.")
+    print("[WARN] faster-whisper not installed — lyrics transcription will not be bundled.")
 
+# pykakasi (Japanese romanization)
 try:
     import pykakasi  # noqa: F401
     _hidden += ["pykakasi"]
@@ -151,7 +162,15 @@ try:
     _hidden += ["unidecode"]
     print("[INFO] unidecode found — will be bundled.")
 except ImportError:
-    print("[INFO] unidecode not installed — fallback romanization will not be bundled.")
+    print("[INFO] unidecode not installed — Korean/other romanization will not be bundled.")
+
+# ── Commented out — not installed ─────────────────────────────────────────────
+# syncedlyrics (multi-provider lyrics — NetEase, Musixmatch, Genius, …)
+# try:
+#     import syncedlyrics
+#     _hidden += ["syncedlyrics"]
+# except ImportError:
+#     pass
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(

@@ -99,8 +99,10 @@ class DownloadWorker(QThread):
 
     # ── QThread entry point ──────────────────────────────
     def run(self) -> None:
-        # Tracks the last filepath seen after each postprocessor (= final audio file).
-        final_filepath: list[str] = []
+        # Collects the final audio filepath for every track after all postprocessors
+        # finish (detected by FFmpegMetadata "finished" event, which is always last).
+        # Single-track downloads produce 1 entry; playlist downloads produce N entries.
+        final_filepaths: list[str] = []
         # Fallback: raw downloaded file before postprocessing (from progress hook)
         pre_dl_path: list[str] = []
 
@@ -150,18 +152,17 @@ class DownloadWorker(QThread):
 
             if d.get("status") == "finished":
                 self.status_changed.emit(self.download_id, "downloading")
-                # Capture the actual output filepath after each postprocessor
                 import sys as _sys
+                pp   = d.get("postprocessor", "")
                 info = d.get("info_dict", {})
-                fp = (info.get("filepath")
-                      or info.get("__last_modified_file")
-                      or "")
-                print(f"[worker] postprocessor finished: pp={d.get('postprocessor')}  fp={fp!r}", file=_sys.stderr, flush=True)
-                if fp:
-                    if final_filepath:
-                        final_filepath[0] = fp
-                    else:
-                        final_filepath.append(fp)
+                fp   = (info.get("filepath")
+                        or info.get("__last_modified_file")
+                        or "")
+                print(f"[worker] postprocessor finished: pp={pp}  fp={fp!r}", file=_sys.stderr, flush=True)
+                # FFmpegMetadata is always the last postprocessor in our chain.
+                # Collect one entry per track here so playlist downloads get all tracks.
+                if fp and pp == "FFmpegMetadata":
+                    final_filepaths.append(fp)
 
         opts = {
             **self.ydl_opts,
@@ -201,27 +202,42 @@ class DownloadWorker(QThread):
             if not self._cancel_event.is_set():
                 if lyrics_callback:
                     import sys as _sys
-                    fp = final_filepath[0] if final_filepath else ""
-                    print(f"[worker] final_filepath={final_filepath}  pre_dl_path={pre_dl_path}", file=_sys.stderr, flush=True)
-                    if not fp and pre_dl_path and target_codec:
+                    fps = list(final_filepaths)
+                    print(f"[worker] final_filepaths={fps}  pre_dl_path={pre_dl_path}", file=_sys.stderr, flush=True)
+                    # Fallback for builds where FFmpegMetadata hook doesn't fire
+                    if not fps and pre_dl_path and target_codec:
                         from pathlib import Path as _Path
-                        fp = str(_Path(pre_dl_path[0]).with_suffix(f".{target_codec}"))
-                        print(f"[worker] fallback filepath={fp!r}", file=_sys.stderr, flush=True)
-                    if fp:
-                        print(f"[worker] launching lyrics thread for {fp!r}", file=_sys.stderr, flush=True)
-                        # Show "Lyrics…" badge; daemon thread flips to "done" when finished.
-                        # Capture `self` so the worker QObject stays alive until the thread exits.
+                        fb = str(_Path(pre_dl_path[0]).with_suffix(f".{target_codec}"))
+                        print(f"[worker] fallback filepath={fb!r}", file=_sys.stderr, flush=True)
+                        fps = [fb]
+                    if fps:
+                        print(f"[worker] launching lyrics threads for {len(fps)} file(s)", file=_sys.stderr, flush=True)
+                        # Show "Lyrics…" badge; last thread to finish flips to "done".
+                        # Capture `self` so the worker QObject stays alive until all threads exit.
                         self.status_changed.emit(self.download_id, "lyrics")
-                        _id = self.download_id
-                        def _do_lyrics(cb=lyrics_callback, path=fp, sid=_id, _w=self):
+                        _id     = self.download_id
+                        _remain = [len(fps)]
+                        _lock   = threading.Lock()
+                        _w      = self
+
+                        def _do_lyrics(cb, path, sid, w, remain, lock):
                             try:
                                 cb(path)
                             except Exception as exc:
                                 import sys as _sys
                                 print(f"[worker] lyrics thread error: {exc!r}", file=_sys.stderr, flush=True)
                             finally:
-                                _w.status_changed.emit(sid, "done")
-                        threading.Thread(target=_do_lyrics, daemon=True).start()
+                                with lock:
+                                    remain[0] -= 1
+                                    if remain[0] == 0:
+                                        w.status_changed.emit(sid, "done")
+
+                        for _fp in fps:
+                            threading.Thread(
+                                target=_do_lyrics,
+                                args=(lyrics_callback, _fp, _id, _w, _remain, _lock),
+                                daemon=True,
+                            ).start()
                     else:
                         print("[worker] ERROR: no filepath for lyrics callback", file=_sys.stderr, flush=True)
                         self.status_changed.emit(self.download_id, "done")

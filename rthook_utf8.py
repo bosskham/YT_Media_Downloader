@@ -37,3 +37,12 @@ def _fix_stream(stream):
 
 sys.stdout = _fix_stream(sys.stdout)
 sys.stderr = _fix_stream(sys.stderr)
+
+# Pre-import tqdm before faster-whisper loads it in a background thread.
+# Without this, two threads racing to import tqdm on first use can deadlock
+# inside Python's import lock on Windows.
+try:
+    import tqdm        # noqa: F401
+    import tqdm.auto   # noqa: F401
+except Exception:
+    pass

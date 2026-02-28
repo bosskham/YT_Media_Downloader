@@ -3,16 +3,27 @@ yt-dlp>=2024.1.1
 mutagen>=1.47.0
 pyinstaller==6.14.2
 
-# Optional — YouTube Music official lyrics (LyricFind, timed when available)
+# YouTube Music artist tab + cover art fallback
 #   pip install ytmusicapi
 ytmusicapi>=1.7.0
 
-# Optional — multi-provider synced lyrics (NetEase, Musixmatch, Lyricsify, Genius, …)
-#   pip install syncedlyrics
-syncedlyrics>=1.0.0
+# Lyrics transcription fallback (when YouTube has no subtitles)
+#   pip install faster-whisper
+faster-whisper>=1.0.0
 
-# Optional — non-Latin lyrics romanization (Japanese → romaji, Chinese → pinyin, etc.)
-#   pip install pykakasi pypinyin unidecode
+# Japanese romanization (original ♪ romaji per lyric line)
+#   pip install pykakasi
 pykakasi>=2.2.1
+
+# ── Commented out — not used ───────────────────────────────────────────────────
+# Multi-provider synced lyrics (NetEase, Musixmatch, Lyricsify, Genius, …)
+#   pip install syncedlyrics
+# syncedlyrics>=1.0.0
+
+# Chinese romanization (pinyin)
+#   pip install pypinyin
 pypinyin>=0.49.0
+
+# Korean / other script romanization
+#   pip install unidecode
 unidecode>=1.3.7

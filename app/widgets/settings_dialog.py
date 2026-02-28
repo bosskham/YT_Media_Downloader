@@ -121,8 +121,8 @@ class SettingsDialog(QDialog):
         aqlt_row.addStretch()
         mus_l.addLayout(aqlt_row)
 
-        self._embed_thumb = QCheckBox("Embed thumbnail")
-        self._embed_meta  = QCheckBox("Embed metadata")
+        self._embed_thumb  = QCheckBox("Embed thumbnail")
+        self._embed_meta   = QCheckBox("Embed metadata")
         self._fetch_lyrics = QCheckBox("Fetch and embed lyrics")
         self._playlist_sub = QCheckBox("Save playlist tracks in sub-folder")
 
@@ -130,6 +130,18 @@ class SettingsDialog(QDialog):
         mus_l.addWidget(self._embed_meta)
         mus_l.addWidget(self._fetch_lyrics)
         mus_l.addWidget(self._playlist_sub)
+
+        # Whisper model (used when YouTube has no subtitles)
+        wm_row = QHBoxLayout()
+        wm_row.addWidget(QLabel("Whisper model (lyrics transcription fallback):"))
+        self._whisper_model = QComboBox()
+        self._whisper_model.addItems(["tiny", "base", "small", "medium", "large"])
+        wm_row.addWidget(self._whisper_model)
+        wm_note = QLabel("larger = slower but more accurate")
+        wm_note.setProperty("role", "muted")
+        wm_row.addWidget(wm_note)
+        wm_row.addStretch()
+        mus_l.addLayout(wm_row)
 
         root.addWidget(mus)
 
@@ -159,6 +171,8 @@ class SettingsDialog(QDialog):
         self._embed_meta.setChecked(self._s.get("embed_metadata", True))
         self._fetch_lyrics.setChecked(self._s.get("fetch_lyrics", True))
         self._playlist_sub.setChecked(self._s.get("playlist_subfolder", True))
+        idx = self._whisper_model.findText(self._s.get("whisper_model", "base"))
+        self._whisper_model.setCurrentIndex(max(0, idx))
 
         _browser_map = {"": 0, "chrome": 1, "chromium": 2, "firefox": 3,
                         "edge": 4, "brave": 5, "opera": 6, "vivaldi": 7}
@@ -178,6 +192,7 @@ class SettingsDialog(QDialog):
             "embed_metadata":    self._embed_meta.isChecked(),
             "fetch_lyrics":      self._fetch_lyrics.isChecked(),
             "playlist_subfolder": self._playlist_sub.isChecked(),
+            "whisper_model":     self._whisper_model.currentText(),
             "cookies_from_browser": (
                 "" if self._cookies_browser.currentIndex() == 0
                 else self._cookies_browser.currentText().lower()
