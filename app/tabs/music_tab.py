@@ -71,27 +71,6 @@ def _build_output_template(
     return os.path.join(out_dir, album_f, f"{num:02d}. %(title)s.%(ext)s")
 
 
-def _write_cover_sidecar(folder: str, safe_name: str, thumb_url: str) -> None:
-    """
-    Download thumb_url and save it as '00. safe_name.jpg' in folder.
-    Called in a daemon thread so it never blocks the UI.
-    Skipped if the file already exists.
-    """
-    import sys
-    import urllib.request as _ur
-    try:
-        os.makedirs(folder, exist_ok=True)
-        dest = os.path.join(folder, f"00. {safe_name}.jpg")
-        if os.path.exists(dest):
-            return
-        req = _ur.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
-        with _ur.urlopen(req, timeout=15) as r:
-            data = r.read()
-        with open(dest, "wb") as fh:
-            fh.write(data)
-        print(f"[sidecar] saved {dest!r}", file=sys.stderr, flush=True)
-    except Exception as exc:
-        print(f"[sidecar] failed: {exc!r}", file=sys.stderr, flush=True)
 
 
 def _make_nav_btn(text: str) -> QPushButton:
@@ -895,7 +874,6 @@ class CollectionWidget(QWidget):
         self._entries: list[dict] = []
         self._collection_title: str = ""
         self._collection_type:  str = mode   # overwritten by _on_info
-        self._playlist_thumb_url: str = ""
         self._info_worker: Optional[InfoWorker] = None
         self._build_ui()
 
@@ -1036,15 +1014,6 @@ class CollectionWidget(QWidget):
         m = re.match(r'^(Album|Playlist|Artist|EP|Single|Mix)\s*[-–—]\s*', raw_title)
         self._collection_type  = m.group(1).lower() if m else self._mode   # "album","ep","single",…
         self._collection_title = raw_title[m.end():].strip() if m else raw_title
-        # Playlist-level thumbnail (square album art) for sidecar writing.
-        # Try thumbnails list (last = highest quality) then fall back to
-        # the singular "thumbnail" field — whichever is non-empty wins.
-        import sys as _sys
-        _best = next((t["url"] for t in reversed(info.get("thumbnails") or [])
-                      if t.get("url")), "")
-        self._playlist_thumb_url = _best or info.get("thumbnail", "")
-        print(f"[sidecar] _on_info thumb={self._playlist_thumb_url!r:.80s}",
-              file=_sys.stderr, flush=True)
         self._list.clear()
         for i, entry in enumerate(self._entries, 1):
             title  = entry.get("title") or entry.get("id", "Unknown")
@@ -1127,31 +1096,25 @@ class CollectionWidget(QWidget):
             else:
                 tpl = os.path.join(out_dir, f"{num:02d}. %(title)s.%(ext)s")
 
-            # Write '00. AlbumTitle.jpg' sidecar once per album folder.
-            # Prefer the playlist-level thumbnail; fall back to the first
-            # entry's thumbnail (covers single-track singles where YouTube
-            # Music may not expose a separate playlist thumbnail).
-            _sidecar_url = self._playlist_thumb_url or thumb
-            import sys as _sys
-            print(f"[sidecar] use_sub={use_sub} embed_thumb={embed_thumb} "
-                  f"url={_sidecar_url!r:.60s} written={sidecar_written}",
-                  file=_sys.stderr, flush=True)
-            if use_sub and embed_thumb and _sidecar_url and not sidecar_written:
+            # For the first track, redirect the thumbnail output to
+            # '00. AlbumTitle.%(ext)s' so yt-dlp writes the sidecar itself
+            # using its own auth/cookies — no separate HTTP request needed.
+            if use_sub and embed_thumb and not sidecar_written:
                 sidecar_written = True
                 folder = os.path.dirname(tpl.split("%(")[0])
                 safe   = _safe_folder(self._collection_title) or "Cover"
-                import threading as _t
-                _t.Thread(
-                    target=_write_cover_sidecar,
-                    args=(folder, safe, _sidecar_url),
-                    daemon=True,
-                ).start()
+                outtmpl = {
+                    "default":   tpl,
+                    "thumbnail": os.path.join(folder, f"00. {safe}.%(ext)s"),
+                }
+            else:
+                outtmpl = tpl
 
             ydl_opts = {
                 "format":          "bestaudio/best",
                 "postprocessors":  _build_audio_postprocessors(codec, quality, embed_thumb),
                 "writethumbnail":  embed_thumb,
-                "outtmpl":         tpl,
+                "outtmpl":         outtmpl,
                 "noplaylist":      True,
                 "quiet":           True,
                 "no_warnings":     True,
@@ -1963,10 +1926,10 @@ class LyricsTranscribeWidget(QWidget):
 # ── Fix Covers tab ────────────────────────────────────────────────────────────
 
 def _find_cover_sidecar(folder: str) -> str | None:
-    """Return the '00. *.jpg' playlist thumbnail path in folder, or None."""
+    """Return the '00. *.(jpg|webp)' sidecar path in folder, or None."""
     try:
         for name in sorted(os.listdir(folder)):
-            if name.startswith("00.") and name.lower().endswith(".jpg"):
+            if name.startswith("00.") and name.lower().endswith((".jpg", ".webp")):
                 return os.path.join(folder, name)
     except OSError:
         pass
