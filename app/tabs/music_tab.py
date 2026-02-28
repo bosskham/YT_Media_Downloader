@@ -2310,6 +2310,20 @@ class MetadataBrowserWidget(QWidget):
         self._pairs.clear()
         self._list.clear()
 
+        # ── Count validation ──────────────────────────────────────────────────
+        if total != len(self._files):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "Track count mismatch",
+                f"The URL has {total} track(s) but the folder has {len(self._files)} file(s).\n\n"
+                "Positional matching requires an exact count — make sure the URL\n"
+                "and folder belong to the same release."
+            )
+            self._status.setText(
+                f"Mismatch: {total} track(s) in URL vs {len(self._files)} file(s) in folder."
+            )
+            return
+
         for i, entry in enumerate(entries):
             track_title = entry.get("title") or ""
             track_artist = (
@@ -2345,13 +2359,6 @@ class MetadataBrowserWidget(QWidget):
             else:
                 # More entries than files
                 self._list.addItem(f"{'—':2}  [{idx:02d}] {track_title}  (no file)")
-
-        # Warn if counts differ
-        if len(entries) != len(self._files):
-            self._list.addItem(
-                f"⚠  {len(entries)} track(s) in URL, {len(self._files)} file(s) in folder — "
-                "check order before applying."
-            )
 
         self._status.setText(
             f"Matched {len(self._pairs)} of {len(self._files)} file(s) to '{album_title}'."
