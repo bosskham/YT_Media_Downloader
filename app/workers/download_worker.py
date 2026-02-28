@@ -152,12 +152,14 @@ class DownloadWorker(QThread):
                     _crop_thumbnail_square(thumb)
                     # Copy cropped thumbnail to sidecar before EmbedThumbnail deletes it
                     if sidecar_dest:
-                        import shutil as _sh
-                        ext  = os.path.splitext(thumb)[1]
-                        dest = sidecar_dest + ext
+                        dest = sidecar_dest + ".jpg"
                         try:
+                            from PIL import Image as _Img
                             os.makedirs(os.path.dirname(dest), exist_ok=True)
-                            _sh.copy2(thumb, dest)
+                            img = _Img.open(thumb)
+                            if img.mode not in ("RGB", "L"):
+                                img = img.convert("RGB")
+                            img.save(dest, format="JPEG", quality=95)
                             print(f"[sidecar] wrote {dest!r}", file=_sys.stderr, flush=True)
                         except Exception as exc:
                             print(f"[sidecar] copy failed: {exc!r}", file=_sys.stderr, flush=True)

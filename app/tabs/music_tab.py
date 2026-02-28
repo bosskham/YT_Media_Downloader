@@ -1921,10 +1921,10 @@ class LyricsTranscribeWidget(QWidget):
 # ── Fix Covers tab ────────────────────────────────────────────────────────────
 
 def _find_cover_sidecar(folder: str) -> str | None:
-    """Return the '00. *.(jpg|webp)' sidecar path in folder, or None."""
+    """Return the '00. *.jpg' sidecar path in folder, or None."""
     try:
         for name in sorted(os.listdir(folder)):
-            if name.startswith("00.") and name.lower().endswith((".jpg", ".webp")):
+            if name.startswith("00.") and name.lower().endswith(".jpg"):
                 return os.path.join(folder, name)
     except OSError:
         pass
