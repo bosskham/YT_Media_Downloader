@@ -32,3 +32,5 @@ desktop.ini
 # Compiled extension modules
 *.so
 *.pyd
+bin/Full bin/ffmpeg.exe
+bin/Full bin/ffprobe.exe

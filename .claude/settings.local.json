@@ -39,7 +39,29 @@
       "Bash(curl -s -H \"Authorization: Bearer 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\" https://api.github.com/user)",
       "Bash(conda run -n yt_dlp_gui python -c \"from PIL import Image; print\\(''Pillow OK'', Image.__version__\\)\")",
       "Bash(conda run -n yt_dlp_gui pip install Pillow -q)",
-      "Bash(curl -s -X POST -H \"Authorization: token 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\" -H \"Content-Type: application/json\" https://api.github.com/repos/bosskham/yt_dlp_gui/releases --data \"{\"\"tag_name\"\":\"\"v1.0.4\"\",\"\"name\"\":\"\"v1.0.4\"\",\"\"body\"\":\"\"## What''s new in v1.0.4\\\\n\\\\n### Lyrics\\\\n- **Whisper model download dialog** — when faster-whisper model isn''t cached, a dialog prompts to Download \\(with live progress bar showing MB downloaded\\), Ignore \\(skip lyrics\\), or Cancel \\(abort download\\)\\\\n- **Fixed crash** when downloading albums with AI lyrics — two concurrent whisper threads on CUDA crashed the process; transcription is now serialized under a lock and the model is cached in memory across songs \\(no re-loading weights per track\\)\\\\n\\\\n### Album art\\\\n- **Square cover art** on every new download — thumbnail is center-cropped to square after audio extraction, before it gets embedded by FFmpeg\\\\n- **\\\\`fix_covers.py\\\\`** — standalone batch script to crop existing files: \\\\`python fix_covers.py \\\\\"\"C:\\\\\\\\Music\\\\\"\" [--dry-run]\\\\`\\\\n\\\\n### Build\\\\n- Updated \\\\`yt_dlp_gui.spec\\\\` with \\\\`huggingface_hub._snapshot_download\\\\`, \\\\`huggingface_hub.utils\\\\`, \\\\`filelock\\\\` hidden imports for the model download progress feature\\\\n\\\\n### Source\\\\nThis release contains source code only. See README for build instructions.\"\",\"\"draft\"\":false,\"\"prerelease\"\":false}\" )"
+      "Bash(curl -s -X POST -H \"Authorization: token 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\" -H \"Content-Type: application/json\" https://api.github.com/repos/bosskham/yt_dlp_gui/releases --data \"{\"\"tag_name\"\":\"\"v1.0.4\"\",\"\"name\"\":\"\"v1.0.4\"\",\"\"body\"\":\"\"## What''s new in v1.0.4\\\\n\\\\n### Lyrics\\\\n- **Whisper model download dialog** — when faster-whisper model isn''t cached, a dialog prompts to Download \\(with live progress bar showing MB downloaded\\), Ignore \\(skip lyrics\\), or Cancel \\(abort download\\)\\\\n- **Fixed crash** when downloading albums with AI lyrics — two concurrent whisper threads on CUDA crashed the process; transcription is now serialized under a lock and the model is cached in memory across songs \\(no re-loading weights per track\\)\\\\n\\\\n### Album art\\\\n- **Square cover art** on every new download — thumbnail is center-cropped to square after audio extraction, before it gets embedded by FFmpeg\\\\n- **\\\\`fix_covers.py\\\\`** — standalone batch script to crop existing files: \\\\`python fix_covers.py \\\\\"\"C:\\\\\\\\Music\\\\\"\" [--dry-run]\\\\`\\\\n\\\\n### Build\\\\n- Updated \\\\`yt_dlp_gui.spec\\\\` with \\\\`huggingface_hub._snapshot_download\\\\`, \\\\`huggingface_hub.utils\\\\`, \\\\`filelock\\\\` hidden imports for the model download progress feature\\\\n\\\\n### Source\\\\nThis release contains source code only. See README for build instructions.\"\",\"\"draft\"\":false,\"\"prerelease\"\":false}\" )",
+      "WebFetch(domain:ytmusicapi.readthedocs.io)",
+      "Bash(pip install ytmusicapi --quiet)",
+      "Bash(pip install ytmusicapi)",
+      "Bash(conda run -n yt_dlp_gui python -c \"from ytmusicapi import YTMusic; print\\(''ok''\\)\")",
+      "Bash(/tmp/test_ytm2.py:*)",
+      "Bash(conda run -n yt_dlp_gui python /tmp/test_ytm2.py)",
+      "Bash(/tmp/test_ytm3.py:*)",
+      "Bash(conda run -n yt_dlp_gui python /tmp/test_ytm3.py)",
+      "Bash(/tmp/test_ytm4.py:*)",
+      "Bash(conda run -n yt_dlp_gui python /tmp/test_ytm4.py)",
+      "Bash(/tmp/test_itunes.py:*)",
+      "Bash(conda run -n yt_dlp_gui python /tmp/test_itunes.py)",
+      "Bash(pip install --upgrade \"yt-dlp[default]\")",
+      "Bash(where gh)",
+      "Bash(winget list --name \"GitHub CLI\")",
+      "Bash(cmd /c \"where gh\")",
+      "Bash(pip index versions ytmusicapi)",
+      "Bash(ls /c/Users/Administrator/Documents/GitHub/yt_dlp_gui/*.py)",
+      "Bash(pip install musicbrainzngs --quiet)",
+      "Bash(pip install musicbrainzngs)",
+      "Bash(conda run -n yt_dlp_gui python -c \"import musicbrainzngs; print\\(musicbrainzngs.__version__\\)\")",
+      "Bash(conda run -n yt_dlp_gui python -c \"import musicbrainzngs; print\\(''ok''\\)\")"
     ]
   }
 }
