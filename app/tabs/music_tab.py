@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QProgressBar, QPushButton, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QDialogButtonBox
 )
 
 from ..download_manager import DownloadManager
@@ -48,7 +48,7 @@ def _build_output_template(
     Build the yt-dlp outtmpl path based on collection type.
 
     Album / EP  →  out_dir / Artist / AlbumTitle / 01. %(title)s.%(ext)s
-    Single      →  out_dir / Artist / Singles    / %(title)s.%(ext)s
+    Single      →  out_dir / Artist / Singles / SingleTitle / 01. %(title)s.%(ext)s
     Artist      →  out_dir / Artist / %(album)s  / %(title)s.%(ext)s
     Playlist    →  out_dir / PlaylistName         / 01. %(title)s.%(ext)s
     """
@@ -60,7 +60,7 @@ def _build_output_template(
         return os.path.join(out_dir, artist_f, album_f, f"{num:02d}. %(title)s.%(ext)s")
 
     if ctype == "single":
-        return os.path.join(out_dir, artist_f, "Singles", "%(title)s.%(ext)s")
+        return os.path.join(out_dir, artist_f, "Singles", album_f, "%(playlist_index)02d. %(title)s.%(ext)s")
 
     if ctype == "artist":
         # Each track may belong to a different album — use yt-dlp's %(album)s field.
@@ -203,93 +203,6 @@ def _youtube_lyrics(url: str) -> str | None:
     return None
 
 
-def _fetch_album_art(url: str, title: str, artist: str) -> bytes | None:
-    """
-    Fetch the original square album art for a song.
-
-    Sources tried in order:
-      1. iTunes Search API  — free, no auth, always returns square art (1200×1200)
-      2. ytmusicapi search  — YouTube Music catalog (unauthenticated; often works)
-      3. ytmusicapi watch_playlist — exact video match (fails for some videos without auth)
-
-    Returns raw JPEG bytes or None if all sources fail.
-    """
-    import sys, json, re as _re
-    import urllib.request as _ur, urllib.parse as _up
-
-    # ── 1. iTunes Search API (most reliable — free, no auth) ──────────────────
-    if title:
-        try:
-            query     = _up.quote_plus(f"{title} {artist}".strip())
-            itunes_url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=5"
-            req = _ur.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
-            with _ur.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-            results = data.get("results", [])
-            if results:
-                art_url = results[0].get("artworkUrl100", "")
-                if art_url:
-                    # Replace 100x100bb with 1200x1200bb for maximum resolution
-                    art_url = art_url.replace("100x100bb", "1200x1200bb")
-                    req2 = _ur.Request(art_url, headers={"User-Agent": "Mozilla/5.0"})
-                    with _ur.urlopen(req2, timeout=15) as r2:
-                        img = r2.read()
-                    print(f"[cover-art] iTunes: {len(img):,} bytes", file=sys.stderr, flush=True)
-                    return img
-        except Exception as exc:
-            print(f"[cover-art] iTunes failed: {exc!r}", file=sys.stderr, flush=True)
-
-    # ── 2+3. ytmusicapi fallback ───────────────────────────────────────────────
-    try:
-        from ytmusicapi import YTMusic
-    except ImportError:
-        return None
-
-    yt = YTMusic()
-    thumb_url: str | None = None
-
-    # 2. Search by title + artist
-    if title:
-        try:
-            query   = f"{title} {artist}".strip()
-            results = yt.search(query, filter="songs", limit=3)
-            if results:
-                thumbs = results[0].get("thumbnails", [])
-                if thumbs:
-                    thumb_url = thumbs[-1]["url"]
-                    print(f"[cover-art] ytmusicapi search: query={query!r}", file=sys.stderr, flush=True)
-        except Exception as exc:
-            print(f"[cover-art] ytmusicapi search failed: {exc!r}", file=sys.stderr, flush=True)
-
-    # 3. Exact video match via watch_playlist
-    if not thumb_url:
-        _m = _re.search(r'(?:v=|youtu\.be/|/v/|/embed/)([A-Za-z0-9_-]{11})', url)
-        if _m:
-            try:
-                wp = yt.get_watch_playlist(videoId=_m.group(1))
-                if wp and wp.get("tracks"):
-                    thumbs = wp["tracks"][0].get("thumbnail", [])
-                    if thumbs:
-                        thumb_url = thumbs[-1]["url"]
-                        print("[cover-art] ytmusicapi watch_playlist", file=sys.stderr, flush=True)
-            except Exception as exc:
-                print(f"[cover-art] ytmusicapi watch_playlist failed: {exc!r}", file=sys.stderr, flush=True)
-
-    if not thumb_url:
-        print("[cover-art] all sources failed", file=sys.stderr, flush=True)
-        return None
-
-    # Upscale lh3.googleusercontent.com URLs to 1200×1200
-    thumb_url = _re.sub(r'=w\d+-h\d+.*$', '=w1200-h1200-l90-rj', thumb_url)
-    try:
-        req = _ur.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
-        with _ur.urlopen(req, timeout=15) as r:
-            img = r.read()
-        print(f"[cover-art] ytmusicapi: {len(img):,} bytes", file=sys.stderr, flush=True)
-        return img
-    except Exception as exc:
-        print(f"[cover-art] ytmusicapi download failed: {exc!r}", file=sys.stderr, flush=True)
-        return None
 
 
 def _embed_cover(filepath: str, img_bytes: bytes) -> None:
@@ -463,6 +376,7 @@ _whisper_model_lock  = _threading.Lock()
 _whisper_model_cache: dict[str, object] = {}   # model_name → WhisperModel instance
 
 
+
 def _is_whisper_model_cached(model_name: str) -> bool:
     """Return True if the model files are already on disk (no download needed)."""
     try:
@@ -529,25 +443,136 @@ def _whisper_model_setting() -> str:
         return "base"
 
 
-def _read_tags_from_file(filepath: str) -> tuple[str, str]:
-    """Read (title, artist) from embedded audio metadata. Returns ('', '') on failure."""
+def _read_tags_from_file(filepath: str) -> tuple[str, str, str]:
+    """Read (title, artist, album) from embedded audio metadata. Returns ('', '', '') on failure."""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".mp3":
             from mutagen.id3 import ID3
-            tags   = ID3(filepath)
-            return str(tags.get("TIT2") or ""), str(tags.get("TPE1") or "")
+            tags = ID3(filepath)
+            return (str(tags.get("TIT2") or ""),
+                    str(tags.get("TPE1") or ""),
+                    str(tags.get("TALB") or ""))
         if ext == ".flac":
             from mutagen.flac import FLAC
-            tags   = FLAC(filepath)
-            return (tags.get("title") or [""])[0], (tags.get("artist") or [""])[0]
+            tags = FLAC(filepath)
+            return ((tags.get("title")  or [""])[0],
+                    (tags.get("artist") or [""])[0],
+                    (tags.get("album")  or [""])[0])
         if ext in (".m4a", ".aac", ".mp4"):
             from mutagen.mp4 import MP4
-            tags   = MP4(filepath)
-            return (tags.get("\xa9nam") or [""])[0], (tags.get("\xa9ART") or [""])[0]
+            tags = MP4(filepath)
+            return ((tags.get("\xa9nam") or [""])[0],
+                    (tags.get("\xa9ART") or [""])[0],
+                    (tags.get("\xa9alb") or [""])[0])
     except Exception:
         pass
-    return "", ""
+    return "", "", ""
+
+
+def _write_tags(filepath: str, tags: dict) -> None:
+    """
+    Write metadata fields into an audio file via mutagen.
+
+    Accepted keys in tags:
+        title, artist, albumartist, album, year, tracknumber, totaltracks, genre
+    Missing keys are silently ignored.
+    """
+    import sys
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".mp3":
+            from mutagen.id3 import (
+                ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TCON, ID3NoHeaderError,
+            )
+            try:
+                audio = ID3(filepath)
+            except ID3NoHeaderError:
+                audio = ID3()
+            if "title"       in tags: audio["TIT2"] = TIT2(encoding=3, text=tags["title"])
+            if "artist"      in tags: audio["TPE1"] = TPE1(encoding=3, text=tags["artist"])
+            if "albumartist" in tags: audio["TPE2"] = TPE2(encoding=3, text=tags["albumartist"])
+            if "album"       in tags: audio["TALB"] = TALB(encoding=3, text=tags["album"])
+            if "year"        in tags: audio["TDRC"] = TDRC(encoding=3, text=tags["year"])
+            if "genre"       in tags: audio["TCON"] = TCON(encoding=3, text=tags["genre"])
+            if "tracknumber" in tags:
+                trck = str(tags["tracknumber"])
+                if "totaltracks" in tags:
+                    trck = f"{trck}/{tags['totaltracks']}"
+                audio["TRCK"] = TRCK(encoding=3, text=trck)
+            audio.save(filepath)
+        elif ext == ".flac":
+            from mutagen.flac import FLAC
+            audio = FLAC(filepath)
+            if "title"       in tags: audio["title"]       = [tags["title"]]
+            if "artist"      in tags: audio["artist"]      = [tags["artist"]]
+            if "albumartist" in tags: audio["albumartist"] = [tags["albumartist"]]
+            if "album"       in tags: audio["album"]       = [tags["album"]]
+            if "year"        in tags: audio["date"]        = [tags["year"]]
+            if "genre"       in tags: audio["genre"]       = [tags["genre"]]
+            if "tracknumber" in tags: audio["tracknumber"] = [str(tags["tracknumber"])]
+            if "totaltracks" in tags: audio["totaltracks"] = [str(tags["totaltracks"])]
+            audio.save()
+        elif ext in (".m4a", ".aac"):
+            from mutagen.mp4 import MP4
+            audio = MP4(filepath)
+            if "title"       in tags: audio["\xa9nam"] = [tags["title"]]
+            if "artist"      in tags: audio["\xa9ART"] = [tags["artist"]]
+            if "albumartist" in tags: audio["aART"]    = [tags["albumartist"]]
+            if "album"       in tags: audio["\xa9alb"] = [tags["album"]]
+            if "year"        in tags: audio["\xa9day"] = [tags["year"]]
+            if "genre"       in tags: audio["\xa9gen"] = [tags["genre"]]
+            if "tracknumber" in tags:
+                n = int(tags["tracknumber"])
+                t = int(tags.get("totaltracks", 0))
+                audio["trkn"] = [(n, t)]
+            audio.save()
+        else:
+            print(f"[meta] unsupported ext {ext!r} — skipping", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[meta] write_tags error on {os.path.basename(filepath)!r}: {exc!r}",
+              file=sys.stderr, flush=True)
+
+
+_release_art_lock:  _threading.Lock       = _threading.Lock()
+_release_art_cache: dict[str, bytes]      = {}  # thumb_url → JPEG bytes
+
+
+def _fetch_release_art(thumb_url: str) -> bytes | None:
+    """Fetch and square-crop a release thumbnail URL. Cached by URL."""
+    import sys, io, re as _re
+    import urllib.request as _ur
+
+    with _release_art_lock:
+        cached = _release_art_cache.get(thumb_url)
+    if cached:
+        print("[cover-art] release cache hit", file=sys.stderr, flush=True)
+        return cached
+
+    try:
+        from PIL import Image
+        url = _re.sub(r'=w\d+-h\d+.*$', '=w1200-h1200-l90-rj', thumb_url)
+        req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req, timeout=15) as r:
+            data = r.read()
+        img = Image.open(io.BytesIO(data))
+        w, h = img.size
+        if w != h:
+            size = min(w, h)
+            img  = img.crop(((w - size) // 2, (h - size) // 2,
+                              (w + size) // 2, (h + size) // 2))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        result = buf.getvalue()
+        print(f"[cover-art] release art: {len(result):,} bytes", file=sys.stderr, flush=True)
+        with _release_art_lock:
+            _release_art_cache[thumb_url] = result
+        return result
+    except Exception as exc:
+        print(f"[cover-art] release art failed: {exc!r}", file=sys.stderr, flush=True)
+        return None
 
 
 def _fetch_and_embed_lyrics(
@@ -556,54 +581,46 @@ def _fetch_and_embed_lyrics(
     title: str,
     artist: str,
     embed_cover: bool = False,
-    fetch_lyrics: bool = True,
+    release_thumb_url: str = "",
+    album_artist: str = "",
 ) -> None:
     """
-    Post-download callback: fetch & embed cover art + lyrics.
-    Cover art : iTunes Search API (square 1200×1200) overwrites yt-dlp's 16:9 thumbnail.
-    Lyrics    : Tier 0 — YouTube VTT subtitles
-                Tier 1 — faster-whisper transcription (fallback)
-    Romanize  : pykakasi (Japanese → hepburn romaji) appended per line.
-    fetch_lyrics=False → cover-art-only mode.
+    Post-download callback: embed cover art (and optionally albumartist) into a
+    downloaded audio file.  Lyrics are handled separately by the Lyrics tab.
     title/artist empty → read from embedded tags (playlist/album downloads).
     """
     import sys
 
-    # For playlist/album downloads title & artist aren't known at queue time —
-    # read them from the metadata that yt-dlp already embedded.
-    if not title or not artist:
-        _t, _a = _read_tags_from_file(filepath)
-        title  = title  or _t
-        artist = artist or _a
+    _t, _a, _ = _read_tags_from_file(filepath)
+    title  = title  or _t
+    artist = artist or _a
 
     print(f"[post-dl] filepath={filepath!r}", file=sys.stderr, flush=True)
-    print(f"[post-dl] title={title!r}  artist={artist!r}  embed_cover={embed_cover}  fetch_lyrics={fetch_lyrics}",
+    print(f"[post-dl] title={title!r}  artist={artist!r}  embed_cover={embed_cover}",
           file=sys.stderr, flush=True)
 
-    # Cover art: iTunes Search API → ytmusicapi search → ytmusicapi watch_playlist
-    if embed_cover:
-        cover = _fetch_album_art(url, title, artist)
+    # Cover art — Artist tab only: release_thumb_url gives the correct release-level
+    # cover from ytmusicapi, overriding the per-track MV video-frame thumbnail
+    # that yt-dlp embeds. All other tabs rely on yt-dlp's EmbedThumbnail
+    # postprocessor which already has the correct square art for YouTube Music URLs.
+    if embed_cover and release_thumb_url:
+        cover = _fetch_release_art(release_thumb_url)
         if cover:
-            _embed_cover(filepath, cover)
+            try:
+                _embed_cover(filepath, cover)
+                print(f"[cover-art] embedded {len(cover):,} bytes", file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[cover-art] embed failed: {exc!r}", file=sys.stderr, flush=True)
+        else:
+            print(f"[cover-art] release art failed for {os.path.basename(filepath)!r}", file=sys.stderr, flush=True)
 
-    if not fetch_lyrics:
-        return
-
-    # Tier 0: YouTube VTT subtitles / caption tracks
-    lrc: str | None = _youtube_lyrics(url) if url else None
-
-    # Tier 1: faster-whisper transcription (when YouTube has no subtitles)
-    if not lrc:
-        whisper_model = _whisper_model_setting()
-        lrc = _transcribe_with_whisper(filepath, whisper_model)
-
-    # Romanize Japanese lyrics (original ♪ romaji per line)
-    if lrc:
-        lrc = _romanize_lyrics(lrc)
-        print(f"[lyrics] {len(lrc)} chars — embedding…", file=sys.stderr, flush=True)
-        _embed_lyrics(filepath, lrc, title, artist)
-    else:
-        print("[lyrics] no lyrics found", file=sys.stderr, flush=True)
+    # albumartist — write so music players group all releases under one artist
+    if album_artist:
+        try:
+            _write_tags(filepath, {"albumartist": album_artist})
+            print(f"[post-dl] albumartist={album_artist!r}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[post-dl] albumartist write failed: {exc!r}", file=sys.stderr, flush=True)
 
 
 def _embed_lyrics(filepath: str, lyrics: str, title: str, artist: str) -> None:
@@ -662,15 +679,12 @@ class MusicOptionsRow(QWidget):
 
         self._thumb_chk   = QCheckBox("Embed thumbnail")
         self._meta_chk    = QCheckBox("Embed metadata")
-        self._lyrics_chk  = QCheckBox("Fetch lyrics")
 
         self._thumb_chk.setChecked(settings.get("embed_thumbnail", True))
         self._meta_chk.setChecked(settings.get("embed_metadata", True))
-        self._lyrics_chk.setChecked(settings.get("fetch_lyrics", True))
 
         lay.addWidget(self._thumb_chk)
         lay.addWidget(self._meta_chk)
-        lay.addWidget(self._lyrics_chk)
         lay.addStretch()
 
         # Seed from settings
@@ -694,10 +708,6 @@ class MusicOptionsRow(QWidget):
     @property
     def embed_metadata(self) -> bool:
         return self._meta_chk.isChecked()
-
-    @property
-    def fetch_lyrics(self) -> bool:
-        return self._lyrics_chk.isChecked()
 
 
 # ── sub-tab: Single track ────────────────────────────────────────────────────
@@ -820,13 +830,11 @@ class SingleTrackWidget(QWidget):
         codec       = self._opts.codec
         quality     = self._opts.quality
         embed_thumb = self._opts.embed_thumbnail
-        fetch_lyr   = self._opts.fetch_lyrics
         out_dir     = self._out_edit.text().strip() or self._settings.get("output_dir")
         os.makedirs(out_dir, exist_ok=True)
 
         info     = self._current_info
         title    = info.get("track") or info.get("title", "")
-        artist   = info.get("artist") or info.get("uploader", "")
         thumb    = info.get("thumbnail", "")
 
         ydl_opts = {
@@ -837,20 +845,8 @@ class SingleTrackWidget(QWidget):
             "noplaylist":      True,
             "quiet":           True,
             "no_warnings":     True,
-            # Use Node.js for YouTube JS challenge solving (signature + n-challenge).
-            # Let yt-dlp use its default client list — restricting clients limits available formats.
             "js_runtimes":     {"node": {}},
         }
-
-        if fetch_lyr and title:
-            _t, _a, _u, _c = title, artist, url, embed_thumb
-            ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, c=_c: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=c)
-            ydl_opts["_target_codec"]    = codec
-        elif embed_thumb:
-            # No lyrics, but still replace yt-dlp's 16:9 thumbnail with proper album art
-            _t, _a, _u = title, artist, url
-            ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=True, fetch_lyrics=False)
-            ydl_opts["_target_codec"]    = codec
 
         self._manager.add_download(
             url, ydl_opts, {"title": title or url, "thumbnail": thumb}
@@ -944,13 +940,10 @@ class CollectionWidget(QWidget):
         chk_row = QHBoxLayout()
         self._thumb_chk  = QCheckBox("Embed thumbnail")
         self._meta_chk   = QCheckBox("Embed metadata")
-        self._lyrics_chk = QCheckBox("Fetch lyrics")
         self._thumb_chk.setChecked(self._settings.get("embed_thumbnail", True))
         self._meta_chk.setChecked(self._settings.get("embed_metadata", True))
-        self._lyrics_chk.setChecked(self._settings.get("fetch_lyrics", True))
         chk_row.addWidget(self._thumb_chk)
         chk_row.addWidget(self._meta_chk)
-        chk_row.addWidget(self._lyrics_chk)
         chk_row.addStretch()
         left.addLayout(chk_row)
 
@@ -1077,7 +1070,6 @@ class CollectionWidget(QWidget):
         codec       = self._fmt_combo.currentText()
         quality     = self._q_combo.currentText().split()[0]
         embed_thumb = self._thumb_chk.isChecked()
-        fetch_lyr   = self._lyrics_chk.isChecked()
         out_dir     = self._out_edit.text().strip() or self._settings.get("output_dir")
         use_sub     = self._subfolder_chk.isChecked()
         os.makedirs(out_dir, exist_ok=True)
@@ -1109,20 +1101,8 @@ class CollectionWidget(QWidget):
                 "noplaylist":      True,
                 "quiet":           True,
                 "no_warnings":     True,
-                # Use Node.js for YouTube JS challenge solving (signature + n-challenge).
-                # Let yt-dlp use its default client list — restricting clients limits available formats.
                 "js_runtimes":     {"node": {}},
             }
-
-            if fetch_lyr and title:
-                _t, _a, _u, _c = title, artist, video_url, embed_thumb
-                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u, c=_c: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=c)
-                ydl_opts["_target_codec"]    = codec
-            elif embed_thumb:
-                # No lyrics, but still replace yt-dlp's 16:9 thumbnail with proper album art
-                _t, _a, _u = title, artist, video_url
-                ydl_opts["_lyrics_callback"] = lambda fp, t=_t, a=_a, u=_u: _fetch_and_embed_lyrics(fp, u, t, a, embed_cover=True, fetch_lyrics=False)
-                ydl_opts["_target_codec"]    = codec
 
             self._manager.add_download(
                 video_url, ydl_opts, {"title": title, "thumbnail": thumb}
@@ -1445,7 +1425,7 @@ class ArtistWidget(QWidget):
 
     Each selected release is downloaded as a full playlist with proper structure:
         out_dir / ArtistName / AlbumTitle  / 01. track.mp3   (Album / EP)
-        out_dir / ArtistName / Singles     / track.mp3        (Single)
+        out_dir / ArtistName / Singles     / SingleTitle / 01. track.mp3  (Single)
     """
 
     def __init__(self, manager: DownloadManager, settings: Settings, parent=None) -> None:
@@ -1521,13 +1501,10 @@ class ArtistWidget(QWidget):
         chk_row = QHBoxLayout()
         self._thumb_chk  = QCheckBox("Embed thumbnail")
         self._meta_chk   = QCheckBox("Embed metadata")
-        self._lyrics_chk = QCheckBox("Fetch lyrics")
         self._thumb_chk.setChecked(self._settings.get("embed_thumbnail", True))
         self._meta_chk.setChecked(self._settings.get("embed_metadata", True))
-        self._lyrics_chk.setChecked(self._settings.get("fetch_lyrics", True))
         chk_row.addWidget(self._thumb_chk)
         chk_row.addWidget(self._meta_chk)
-        chk_row.addWidget(self._lyrics_chk)
         chk_row.addStretch()
         left.addLayout(chk_row)
 
@@ -1632,7 +1609,6 @@ class ArtistWidget(QWidget):
         codec       = self._fmt_combo.currentText()
         quality     = self._q_combo.currentText().split()[0]
         embed_thumb = self._thumb_chk.isChecked()
-        fetch_lyr   = self._lyrics_chk.isChecked()
         out_dir     = self._out_edit.text().strip() or self._settings.get("output_dir")
         os.makedirs(out_dir, exist_ok=True)
 
@@ -1647,12 +1623,12 @@ class ArtistWidget(QWidget):
             # Folder structure based on release type
             if rtype == "single":
                 tpl = os.path.join(
-                    out_dir, artist_f, "Singles", "%(title)s.%(ext)s"
+                    out_dir, artist_f, "Singles", title_f, "%(playlist_index)02d. %(title)s.%(ext)s"
                 )
             else:
-                # Album / EP — numbered tracks using yt-dlp's playlist_index
+                # Album / EP — grouped under "Albums & EPs", numbered tracks
                 tpl = os.path.join(
-                    out_dir, artist_f, title_f,
+                    out_dir, artist_f, "Albums & EPs", title_f,
                     "%(playlist_index)02d. %(title)s.%(ext)s"
                 )
 
@@ -1669,11 +1645,13 @@ class ArtistWidget(QWidget):
 
             # Title/artist not known per-track at queue time;
             # _fetch_and_embed_lyrics will read them from embedded metadata.
-            if fetch_lyr or embed_thumb:
-                _c, _fl = embed_thumb, fetch_lyr
+            if embed_thumb:
+                _tu = thumb
+                _aa = self._artist_name
                 ydl_opts["_lyrics_callback"] = (
-                    lambda fp, c=_c, fl=_fl:
-                    _fetch_and_embed_lyrics(fp, "", "", "", embed_cover=c, fetch_lyrics=fl)
+                    lambda fp, tu=_tu, aa=_aa:
+                    _fetch_and_embed_lyrics(fp, "", "", "", embed_cover=True,
+                                            release_thumb_url=tu, album_artist=aa)
                 )
                 ydl_opts["_target_codec"] = codec
 
@@ -1700,6 +1678,713 @@ class NavBar(QWidget):
             lay.addWidget(btn)
             btn.clicked.connect(lambda _, idx=i: stack.setCurrentIndex(idx))
         lay.addStretch()
+
+
+# ── Lyrics tab ────────────────────────────────────────────────────────────────
+
+class _LyricsThread(QThread):
+    """Background thread: transcribe audio files with faster-whisper."""
+
+    progress     = Signal(int, int)   # done, total
+    log          = Signal(str)        # one status line per file
+    finished_all = Signal(int, int)   # done, errors
+
+    def __init__(
+        self,
+        files: list[str],
+        model_name: str,
+        romanize: bool,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._files      = files
+        self._model_name = model_name
+        self._romanize   = romanize
+
+    def run(self) -> None:
+        total = len(self._files)
+        done  = errors = 0
+        for filepath in self._files:
+            try:
+                lrc = _transcribe_with_whisper(filepath, self._model_name)
+                if lrc:
+                    if self._romanize:
+                        lrc = _romanize_lyrics(lrc)
+                    title, artist, _ = _read_tags_from_file(filepath)
+                    _embed_lyrics(filepath, lrc, title, artist)
+                    self.log.emit(f"✓  {os.path.basename(filepath)}")
+                else:
+                    self.log.emit(f"—  {os.path.basename(filepath)}  (silent / no speech detected)")
+                done += 1
+            except Exception as exc:
+                self.log.emit(f"✗  {os.path.basename(filepath)}: {exc}")
+                errors += 1
+                done   += 1
+            self.progress.emit(done, total)
+        self.finished_all.emit(done - errors, errors)
+
+
+class LyricsTranscribeWidget(QWidget):
+    """Batch-transcribe audio files with faster-whisper and embed LRC lyrics."""
+
+    def __init__(self, settings: "Settings", parent=None) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self._files: list[str]           = []
+        self._thread: _LyricsThread | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(8)
+
+        desc = QLabel(
+            "Transcribe audio files with <b>faster-whisper</b> and embed the result as "
+            "synchronized LRC lyrics. Romanization (ja/zh/ko) is applied automatically."
+        )
+        desc.setWordWrap(True)
+        desc.setProperty("role", "muted")
+        lay.addWidget(desc)
+
+        # ── Folder picker ──
+        dir_row = QHBoxLayout()
+        self._dir_edit = QLineEdit()
+        self._dir_edit.setPlaceholderText("Music folder to scan…")
+        self._dir_edit.setText(self._settings.get("output_dir", ""))
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setProperty("role", "secondary")
+        browse_btn.clicked.connect(self._browse)
+        self._scan_btn = QPushButton("Scan")
+        self._scan_btn.setProperty("role", "secondary")
+        self._scan_btn.clicked.connect(self._scan)
+        dir_row.addWidget(self._dir_edit)
+        dir_row.addWidget(browse_btn)
+        dir_row.addWidget(self._scan_btn)
+        lay.addLayout(dir_row)
+
+        # ── Options ──
+        opt_row = QHBoxLayout()
+        opt_row.addWidget(QLabel("Model:"))
+        self._model_combo = QComboBox()
+        self._model_combo.addItems(["tiny", "base", "small", "medium", "large", "turbo"])
+        idx = self._model_combo.findText(self._settings.get("whisper_model", "base"))
+        self._model_combo.setCurrentIndex(max(0, idx))
+        opt_row.addWidget(self._model_combo)
+        self._romanize_chk = QCheckBox("Romanize (ja / zh / ko)")
+        self._romanize_chk.setChecked(True)
+        opt_row.addWidget(self._romanize_chk)
+        opt_row.addStretch()
+        lay.addLayout(opt_row)
+
+        # ── File list ──
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        lay.addWidget(self._list, 1)
+
+        # ── Log ──
+        self._log = QListWidget()
+        self._log.setMaximumHeight(120)
+        self._log.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._log.hide()
+        lay.addWidget(self._log)
+
+        # ── Progress ──
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(True)
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        # ── Bottom bar ──
+        bot = QHBoxLayout()
+        self._status = QLabel("Scan a folder to find audio files.")
+        self._status.setProperty("role", "muted")
+        self._transcribe_btn = QPushButton("Transcribe All")
+        self._transcribe_btn.setEnabled(False)
+        self._transcribe_btn.clicked.connect(self._transcribe_all)
+        bot.addWidget(self._status)
+        bot.addStretch()
+        bot.addWidget(self._transcribe_btn)
+        lay.addLayout(bot)
+
+    def _browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(
+            self, "Select music folder",
+            self._dir_edit.text() or self._settings.get("output_dir", "")
+        )
+        if d:
+            self._dir_edit.setText(d)
+
+    def _scan(self) -> None:
+        root = self._dir_edit.text().strip()
+        if not root or not os.path.isdir(root):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Invalid folder", "Select a valid folder first.")
+            return
+
+        self._files.clear()
+        self._list.clear()
+        self._log.clear()
+        self._log.hide()
+        self._progress.hide()
+
+        AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            for fname in sorted(filenames):
+                if os.path.splitext(fname)[1].lower() in AUDIO_EXTS:
+                    fpath = os.path.join(dirpath, fname)
+                    self._files.append(fpath)
+                    self._list.addItem(os.path.relpath(fpath, root))
+
+        if self._files:
+            self._status.setText(
+                f"Found {len(self._files)} audio file(s). Ready to transcribe."
+            )
+            self._transcribe_btn.setEnabled(True)
+        else:
+            self._status.setText("No audio files found.")
+            self._transcribe_btn.setEnabled(False)
+
+    def _transcribe_all(self) -> None:
+        if not self._files:
+            return
+        model_name = self._model_combo.currentText()
+        if not _check_whisper_model(model_name, self):
+            return
+
+        self._transcribe_btn.setEnabled(False)
+        self._scan_btn.setEnabled(False)
+        self._progress.setRange(0, len(self._files))
+        self._progress.setValue(0)
+        self._progress.show()
+        self._log.clear()
+        self._log.show()
+
+        self._thread = _LyricsThread(
+            self._files,
+            model_name,
+            self._romanize_chk.isChecked(),
+            parent=self,
+        )
+        self._thread.progress.connect(self._on_progress)
+        self._thread.log.connect(self._on_log)
+        self._thread.finished_all.connect(self._on_done)
+        self._thread.start()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        self._progress.setValue(done)
+        self._status.setText(f"Transcribing… {done}/{total}")
+
+    def _on_log(self, msg: str) -> None:
+        self._log.addItem(msg)
+        self._log.scrollToBottom()
+
+    def _on_done(self, done: int, errors: int) -> None:
+        self._scan_btn.setEnabled(True)
+        self._transcribe_btn.setEnabled(bool(self._files))
+        msg = f"Done. {done} file(s) transcribed."
+        if errors:
+            msg += f"  {errors} error(s) — see log."
+        self._status.setText(msg)
+
+
+# ── Fix Covers tab ────────────────────────────────────────────────────────────
+
+def _find_cover_sidecar(folder: str) -> str | None:
+    """Return the '00. *.jpg' playlist thumbnail path in folder, or None."""
+    try:
+        for name in sorted(os.listdir(folder)):
+            if name.startswith("00.") and name.lower().endswith(".jpg"):
+                return os.path.join(folder, name)
+    except OSError:
+        pass
+    return None
+
+
+class _CoverEmbedThread(QThread):
+    """Background thread: embed cover art from '00. *.jpg' sidecars."""
+
+    progress = Signal(int, int)          # done, total
+    log      = Signal(str)               # status line
+    finished_all = Signal(int, int)      # done, errors
+
+    def __init__(self, tasks: list[tuple[str, list[str]]], parent=None) -> None:
+        # tasks: list of (cover_jpg_path, [audio_file_paths])
+        super().__init__(parent)
+        self._tasks = tasks
+
+    def run(self) -> None:
+        total  = sum(len(af) for _, af in self._tasks)
+        done   = errors = 0
+        for cover_path, audio_paths in self._tasks:
+            try:
+                with open(cover_path, "rb") as fh:
+                    img_bytes = fh.read()
+            except Exception as exc:
+                self.log.emit(f"[!] Cannot read {os.path.basename(cover_path)}: {exc}")
+                errors += len(audio_paths)
+                done   += len(audio_paths)
+                self.progress.emit(done, total)
+                continue
+            for fpath in audio_paths:
+                try:
+                    _embed_cover(fpath, img_bytes)
+                    self.log.emit(f"✓  {os.path.basename(fpath)}")
+                    done += 1
+                except Exception as exc:
+                    self.log.emit(f"✗  {os.path.basename(fpath)}: {exc}")
+                    errors += 1
+                    done   += 1
+                self.progress.emit(done, total)
+        self.finished_all.emit(done - errors, errors)
+
+
+class CoverFixWidget(QWidget):
+    """Batch-embed cover art from '00. *.jpg' yt-dlp sidecars into audio files."""
+
+    def __init__(self, settings: "Settings", parent=None) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self._tasks: list[tuple[str, list[str]]] = []
+        self._thread: _CoverEmbedThread | None   = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(8)
+
+        desc = QLabel(
+            "Finds every <b>00.&nbsp;*.jpg</b> playlist thumbnail saved by yt-dlp and "
+            "embeds it as album art into all audio files in the same folder."
+        )
+        desc.setWordWrap(True)
+        desc.setProperty("role", "muted")
+        lay.addWidget(desc)
+
+        # ── Folder picker ──
+        dir_row = QHBoxLayout()
+        self._dir_edit = QLineEdit()
+        self._dir_edit.setPlaceholderText("Music folder to scan…")
+        self._dir_edit.setText(self._settings.get("output_dir", ""))
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setProperty("role", "secondary")
+        browse_btn.clicked.connect(self._browse)
+        self._scan_btn = QPushButton("Scan")
+        self._scan_btn.setProperty("role", "secondary")
+        self._scan_btn.clicked.connect(self._scan)
+        dir_row.addWidget(self._dir_edit)
+        dir_row.addWidget(browse_btn)
+        dir_row.addWidget(self._scan_btn)
+        lay.addLayout(dir_row)
+
+        # ── Results list ──
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        lay.addWidget(self._list, 1)
+
+        # ── Log output ──
+        self._log = QListWidget()
+        self._log.setMaximumHeight(120)
+        self._log.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._log.hide()
+        lay.addWidget(self._log)
+
+        # ── Progress bar ──
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(True)
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        # ── Bottom bar ──
+        bot = QHBoxLayout()
+        self._status = QLabel("Scan a folder to find albums with cover sidecars.")
+        self._status.setProperty("role", "muted")
+        self._embed_btn = QPushButton("Embed All")
+        self._embed_btn.setEnabled(False)
+        self._embed_btn.clicked.connect(self._embed_all)
+        bot.addWidget(self._status)
+        bot.addStretch()
+        bot.addWidget(self._embed_btn)
+        lay.addLayout(bot)
+
+    def _browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(
+            self, "Select music folder",
+            self._dir_edit.text() or self._settings.get("output_dir", "")
+        )
+        if d:
+            self._dir_edit.setText(d)
+
+    def _scan(self) -> None:
+        root = self._dir_edit.text().strip()
+        if not root or not os.path.isdir(root):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Invalid folder", "Select a valid folder first.")
+            return
+
+        self._tasks.clear()
+        self._list.clear()
+        self._log.clear()
+        self._log.hide()
+        self._progress.hide()
+
+        AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            cover = _find_cover_sidecar(dirpath)
+            if not cover:
+                continue
+            audio = sorted(
+                os.path.join(dirpath, f) for f in filenames
+                if os.path.splitext(f)[1].lower() in AUDIO_EXTS
+            )
+            if not audio:
+                continue
+            self._tasks.append((cover, audio))
+            rel = os.path.relpath(dirpath, root)
+            self._list.addItem(
+                f"{rel}   ←  {os.path.basename(cover)}  ({len(audio)} file(s))"
+            )
+
+        if self._tasks:
+            total = sum(len(a) for _, a in self._tasks)
+            self._status.setText(
+                f"Found {len(self._tasks)} folder(s) with cover sidecars — {total} audio file(s)."
+            )
+            self._embed_btn.setEnabled(True)
+        else:
+            self._status.setText("No '00. *.jpg' cover sidecars found.")
+            self._embed_btn.setEnabled(False)
+
+    def _embed_all(self) -> None:
+        if not self._tasks:
+            return
+        self._embed_btn.setEnabled(False)
+        self._scan_btn.setEnabled(False)
+
+        total = sum(len(a) for _, a in self._tasks)
+        self._progress.setRange(0, total)
+        self._progress.setValue(0)
+        self._progress.show()
+        self._log.clear()
+        self._log.show()
+
+        self._thread = _CoverEmbedThread(self._tasks, parent=self)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.log.connect(self._on_log)
+        self._thread.finished_all.connect(self._on_done)
+        self._thread.start()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        self._progress.setValue(done)
+        self._status.setText(f"Embedding… {done}/{total}")
+
+    def _on_log(self, msg: str) -> None:
+        self._log.addItem(msg)
+        self._log.scrollToBottom()
+
+    def _on_done(self, done: int, errors: int) -> None:
+        self._scan_btn.setEnabled(True)
+        self._embed_btn.setEnabled(bool(self._tasks))
+        msg = f"Done. {done} file(s) updated."
+        if errors:
+            msg += f"  {errors} error(s) — see log."
+        self._status.setText(msg)
+
+
+# ── Metadata tab ──────────────────────────────────────────────────────────────
+
+class _YTMetadataFetchThread(QThread):
+    """
+    Background thread: extract playlist/track metadata from a YouTube Music URL
+    via yt-dlp (extract_flat — no download) and emit the entry list.
+    """
+
+    entries_ready = Signal(list, dict)   # (entries, playlist_info)
+    error         = Signal(str)
+
+    def __init__(self, url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._url = url
+
+    def run(self) -> None:
+        try:
+            import yt_dlp
+        except ImportError:
+            self.error.emit("yt-dlp is not installed.")
+            return
+
+        from ..settings import get_settings as _gs
+        cfg     = _gs()
+        ck_file = cfg.get("cookies_file", "")
+        browser = cfg.get("cookies_from_browser", "")
+
+        opts: dict = {
+            "extract_flat": "in_playlist",
+            "quiet":        True,
+            "no_warnings":  True,
+            "js_runtimes":  {"node": {}},
+        }
+        if ck_file:
+            opts["cookiefile"] = ck_file
+        elif browser:
+            opts["cookiesfrombrowser"] = (browser,)
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(self._url, download=False)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+
+        if not info:
+            self.error.emit("No info returned from URL.")
+            return
+
+        entries = info.get("entries")
+        if entries:
+            # Playlist / album — entries is a list of tracks
+            self.entries_ready.emit(list(entries), info)
+        else:
+            # Single track — wrap in list so the rest of the code is uniform
+            self.entries_ready.emit([info], info)
+
+
+class MetadataBrowserWidget(QWidget):
+    """
+    Metadata tab: pair a local folder with a YouTube Music URL, fetch playlist
+    metadata via yt-dlp (no re-download), match tracks by index, then write
+    tags (title, artist, albumartist, album, year, tracknumber) via mutagen.
+    """
+
+    def __init__(self, settings: "Settings", parent=None) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self._files:   list[str]        = []   # sorted audio files in folder
+        self._pairs:   list[tuple[str, dict]] = []  # (filepath, tags_dict)
+        self._thread:  _YTMetadataFetchThread | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(8)
+
+        desc = QLabel(
+            "Select the local folder for an album/single, paste its "
+            "<b>YouTube Music URL</b>, then fetch and apply metadata — "
+            "no re-download needed."
+        )
+        desc.setWordWrap(True)
+        desc.setProperty("role", "muted")
+        lay.addWidget(desc)
+
+        # ── Folder picker ──
+        dir_row = QHBoxLayout()
+        self._dir_edit = QLineEdit()
+        self._dir_edit.setPlaceholderText("Album / single folder…")
+        self._dir_edit.setText(self._settings.get("output_dir", ""))
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setProperty("role", "secondary")
+        browse_btn.clicked.connect(self._browse)
+        self._scan_btn = QPushButton("Scan")
+        self._scan_btn.setProperty("role", "secondary")
+        self._scan_btn.clicked.connect(self._scan)
+        dir_row.addWidget(self._dir_edit)
+        dir_row.addWidget(browse_btn)
+        dir_row.addWidget(self._scan_btn)
+        lay.addLayout(dir_row)
+
+        # ── YouTube Music URL ──
+        url_row = QHBoxLayout()
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText(
+            "https://music.youtube.com/playlist?list=… or watch?v=…"
+        )
+        self._fetch_btn = QPushButton("Fetch")
+        self._fetch_btn.setProperty("role", "secondary")
+        self._fetch_btn.setEnabled(False)
+        self._fetch_btn.clicked.connect(self._fetch)
+        url_row.addWidget(self._url_edit)
+        url_row.addWidget(self._fetch_btn)
+        lay.addLayout(url_row)
+
+        # ── Match list ──
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        lay.addWidget(self._list, 1)
+
+        # ── Progress bar (shown while fetching) ──
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)   # indeterminate
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        # ── Bottom bar ──
+        bot = QHBoxLayout()
+        self._status = QLabel("Scan a folder, then paste a YouTube Music URL.")
+        self._status.setProperty("role", "muted")
+        self._apply_btn = QPushButton("Apply All")
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.clicked.connect(self._apply_all)
+        bot.addWidget(self._status)
+        bot.addStretch()
+        bot.addWidget(self._apply_btn)
+        lay.addLayout(bot)
+
+    def _browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(
+            self, "Select album / single folder",
+            self._dir_edit.text() or self._settings.get("output_dir", "")
+        )
+        if d:
+            self._dir_edit.setText(d)
+
+    def _scan(self) -> None:
+        root = self._dir_edit.text().strip()
+        if not root or not os.path.isdir(root):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Invalid folder", "Select a valid folder first.")
+            return
+
+        self._files.clear()
+        self._pairs.clear()
+        self._list.clear()
+        self._apply_btn.setEnabled(False)
+
+        AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac"}
+        for fname in sorted(os.listdir(root)):
+            if os.path.splitext(fname)[1].lower() in AUDIO_EXTS:
+                self._files.append(os.path.join(root, fname))
+
+        if self._files:
+            self._status.setText(
+                f"Found {len(self._files)} file(s). Paste the YouTube Music URL and click Fetch."
+            )
+            self._fetch_btn.setEnabled(True)
+            for fp in self._files:
+                self._list.addItem(f"  {os.path.basename(fp)}")
+        else:
+            self._status.setText("No audio files found in folder.")
+            self._fetch_btn.setEnabled(False)
+
+    def _fetch(self) -> None:
+        url = self._url_edit.text().strip()
+        if not url:
+            return
+        if not self._files:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "No files", "Scan a folder first.")
+            return
+
+        self._fetch_btn.setEnabled(False)
+        self._scan_btn.setEnabled(False)
+        self._apply_btn.setEnabled(False)
+        self._pairs.clear()
+        self._list.clear()
+        self._status.setText("Fetching metadata from YouTube Music…")
+        self._progress.show()
+
+        self._thread = _YTMetadataFetchThread(url, parent=self)
+        self._thread.entries_ready.connect(self._on_entries)
+        self._thread.error.connect(self._on_error)
+        self._thread.finished.connect(self._on_fetch_done)
+        self._thread.start()
+
+    def _on_entries(self, entries: list, playlist_info: dict) -> None:
+        import sys
+        album_title = playlist_info.get("title") or playlist_info.get("playlist_title") or ""
+        albumartist = (
+            playlist_info.get("channel")
+            or playlist_info.get("uploader")
+            or playlist_info.get("artist")
+            or ""
+        )
+        total = len(entries)
+
+        self._pairs.clear()
+        self._list.clear()
+
+        for i, entry in enumerate(entries):
+            track_title = entry.get("title") or ""
+            track_artist = (
+                entry.get("artist")
+                or entry.get("creator")
+                or entry.get("uploader")
+                or albumartist
+            )
+            idx = entry.get("playlist_index") or (i + 1)
+            date = str(entry.get("release_year") or (entry.get("upload_date") or "")[:4])
+
+            tags = {
+                "title":       track_title,
+                "artist":      track_artist,
+                "albumartist": albumartist,
+                "album":       album_title,
+                "tracknumber": str(idx),
+                "totaltracks": str(total),
+            }
+            if date:
+                tags["year"] = date
+
+            # Match by position: entry index → file index
+            if i < len(self._files):
+                filepath = self._files[i]
+                self._pairs.append((filepath, tags))
+                fname = os.path.basename(filepath)
+                self._list.addItem(
+                    f"{'✓':2}  [{idx:02d}] {track_title}  →  {fname}"
+                )
+                print(f"[meta] pair [{idx}] {track_title!r} → {fname!r}",
+                      file=sys.stderr, flush=True)
+            else:
+                # More entries than files
+                self._list.addItem(f"{'—':2}  [{idx:02d}] {track_title}  (no file)")
+
+        # Warn if counts differ
+        if len(entries) != len(self._files):
+            self._list.addItem(
+                f"⚠  {len(entries)} track(s) in URL, {len(self._files)} file(s) in folder — "
+                "check order before applying."
+            )
+
+        self._status.setText(
+            f"Matched {len(self._pairs)} of {len(self._files)} file(s) to '{album_title}'."
+        )
+
+    def _on_error(self, msg: str) -> None:
+        self._status.setText(f"Error: {msg}")
+
+    def _on_fetch_done(self) -> None:
+        self._progress.hide()
+        self._scan_btn.setEnabled(True)
+        self._fetch_btn.setEnabled(True)
+        self._apply_btn.setEnabled(bool(self._pairs))
+
+    def _apply_all(self) -> None:
+        if not self._pairs:
+            return
+        import sys
+        applied = errors = 0
+        for filepath, tags in self._pairs:
+            try:
+                _write_tags(filepath, tags)
+                applied += 1
+            except Exception as exc:
+                print(f"[meta] apply error {os.path.basename(filepath)!r}: {exc!r}",
+                      file=sys.stderr, flush=True)
+                errors += 1
+
+        msg = f"Applied metadata to {applied} file(s)."
+        if errors:
+            msg += f"  {errors} error(s)."
+        self._status.setText(msg)
+        self._apply_btn.setEnabled(False)
 
 
 # ── MusicTab ──────────────────────────────────────────────────────────────────
@@ -1730,7 +2415,13 @@ class MusicTab(QWidget):
         self._stack.addWidget(ArtistWidget(self._manager, self._settings))
         self._stack.addWidget(CollectionWidget(self._manager, self._settings, mode="album"))
         self._stack.addWidget(CollectionWidget(self._manager, self._settings, mode="playlist"))
+        self._stack.addWidget(LyricsTranscribeWidget(self._settings))
+        self._stack.addWidget(CoverFixWidget(self._settings))
+        self._stack.addWidget(MetadataBrowserWidget(self._settings))
 
-        nav = NavBar(["Single Track", "Artist", "Album", "Playlist"], self._stack)
+        nav = NavBar(
+            ["Single Track", "Artist", "Album", "Playlist", "Lyrics", "Fix Covers", "Metadata"],
+            self._stack,
+        )
         root.addWidget(nav)
         root.addWidget(self._stack)

@@ -135,7 +135,7 @@ class SettingsDialog(QDialog):
         wm_row = QHBoxLayout()
         wm_row.addWidget(QLabel("Whisper model (lyrics transcription fallback):"))
         self._whisper_model = QComboBox()
-        self._whisper_model.addItems(["tiny", "base", "small", "medium", "large"])
+        self._whisper_model.addItems(["tiny", "base", "small", "medium", "large", "turbo"])
         wm_row.addWidget(self._whisper_model)
         wm_note = QLabel("larger = slower but more accurate")
         wm_note.setProperty("role", "muted")

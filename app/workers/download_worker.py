@@ -11,14 +11,16 @@ from ..settings import resource_path
 
 
 def _crop_thumbnail_square(thumb_path: str) -> None:
-    """Center-crop a JPEG thumbnail to square in-place using Pillow."""
+    """Center-crop a thumbnail to square in-place using Pillow.
+    Called before EmbedThumbnail runs so yt-dlp embeds the cropped version.
+    """
     import sys
     try:
         from PIL import Image
         img = Image.open(thumb_path)
         w, h = img.size
         if w == h:
-            return
+            return   # Already square — nothing to do
         size = min(w, h)
         left = (w - size) // 2
         top  = (h - size) // 2
