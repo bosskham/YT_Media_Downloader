@@ -33,7 +33,7 @@ if not _icon_file.exists():
 _icon_str = str(_icon_file) if _icon_file.exists() else None
 
 # ── Static data files ─────────────────────────────────────────────────────────
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 _datas = []
 if _icon_file.exists():
@@ -129,16 +129,21 @@ try:
     import ctranslate2     # noqa: F401
     import huggingface_hub # noqa: F401
     import tokenizers      # noqa: F401
+    # collect_all picks up ctranslate2's DLLs (ctranslate2.dll, cudnn64_9.dll,
+    # libiomp5md.dll) which are bundled inside the package and not auto-detected.
+    _ct2_datas, _ct2_bins, _ct2_hidden = collect_all("ctranslate2")
+    _datas += _ct2_datas
+    _bins  += _ct2_bins
+    _hidden += _ct2_hidden
     _hidden += [
         "faster_whisper",
-        "ctranslate2",
         "huggingface_hub",
         "huggingface_hub.constants",
         "tokenizers",
         "tqdm",
         "tqdm.auto",
     ]
-    print("[INFO] faster-whisper found — will be bundled.")
+    print("[INFO] faster-whisper + ctranslate2 (CUDA) found — will be bundled.")
 except ImportError:
     print("[WARN] faster-whisper not installed — lyrics transcription will not be bundled.")
 
