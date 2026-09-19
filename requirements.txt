@@ -1,5 +1,6 @@
 PySide6>=6.6.0
-yt-dlp
+yt-dlp[default]
+Pillow>=10.0.0
 mutagen>=1.47.0
 pyinstaller==6.14.2
 
