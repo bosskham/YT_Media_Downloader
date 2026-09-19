@@ -3,7 +3,7 @@
 A desktop app for downloading YouTube videos and music, with a proper music-library workflow on top: square album art, tags, artist discographies, and synchronized lyrics. It's a friendly [PySide6](https://doc.qt.io/qtforpython-6/) front end for [yt-dlp](https://github.com/yt-dlp/yt-dlp) and FFmpeg.
 
 [![Latest release](https://img.shields.io/github/v/release/bosskham/YT_Media_Downloader)](https://github.com/bosskham/YT_Media_Downloader/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
 - [Features](#features)
@@ -277,7 +277,7 @@ Honest notes so nobody is surprised:
 
 ## License and credits
 
-Licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [MIT License](LICENSE).
 
 Made by **Boromey Han** (aka 1ClickDev · dashNdot).
 
