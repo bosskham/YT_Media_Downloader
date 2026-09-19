@@ -34,3 +34,6 @@ desktop.ini
 *.pyd
 bin/Full bin/ffmpeg.exe
 bin/Full bin/ffprobe.exe
+
+# Browser cookie exports (contain live session credentials — never commit)
+*cookies*.txt

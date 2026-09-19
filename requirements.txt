@@ -1,5 +1,5 @@
 PySide6>=6.6.0
-yt-dlp>=2024.1.1
+yt-dlp
 mutagen>=1.47.0
 pyinstaller==6.14.2
 
